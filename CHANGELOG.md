@@ -13,6 +13,17 @@ The format is based on Keep a Changelog, and this project aims to follow Semanti
 ### Fixed
 -
 
+
+## [0.1.1] - 2026-03-01
+### Fixed
+- Correct P/L toggle behavior (Unificado vs Separado) in Consolidated view.
+
+### Changed
+- Updated README (technologies and execution instructions).
+    - Corrected tech stack description (removed Vite as runtime assumption)
+    - Clarified how to run the development server 
+
+
 ## [0.1.0] - 2026-03-01
 ### Added
 - Initial tracked version of the app in this repository, as currently working on `main`.
