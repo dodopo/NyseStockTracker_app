@@ -22,7 +22,7 @@ git clone https://github.com/dodopo/NyseStockTracker_app.git
 cd NyseStockTracker_app
 npm install
 npm run dev
-
+```
 
 ## 🔐 Configuração do ambiente (.env)
 
