@@ -65,3 +65,6 @@ Após concluir a instalação e configurar o ambiente, execute o comando abaixo 
 ```bash
 npm run dev
 ```
+Abra o navegador de sua preferência e acesse o endereço http://localhost:3000 para acessar o App.
+
+Quando terminar de usar volte no terminal e desligue o servidor digitando: Cntrl + C
