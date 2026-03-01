@@ -3,9 +3,11 @@
 Aplicação para acompanhamento e análise de posições em ações, com histórico de operações e métricas de performance.
 
 ## 🚀 Tecnologias
+
 - React + TypeScript
-- Vite
-- Node.js
+- Node.js (servidor de desenvolvimento via `server.ts`)
+- Vite (build e preview)
+- SQLite (armazenamento local)
 
 Fucnionalidades dessa versão:
 
@@ -31,7 +33,7 @@ Este projeto utiliza a API gratuita da Finnhub para buscar dados de mercado em t
 Por motivos de segurança, as chaves de API **não são versionadas** no repositório.  
 Você precisa criar um arquivo `.env` local antes de rodar o app.
 
-### 1️⃣ Criar sua chave gratuita na Finnhub
+## 1️⃣ Criar sua chave gratuita na Finnhub
 
 1. Acesse: https://finnhub.io/
 2. Crie uma conta gratuita
@@ -42,7 +44,7 @@ Você precisa criar um arquivo `.env` local antes de rodar o app.
 
 ---
 
-### 2️⃣ Criar o arquivo `.env`
+## 2️⃣ Criar o arquivo `.env`
 
 Na raiz do projeto, crie um arquivo chamado `.env` com o seguinte conteúdo:
 
@@ -58,7 +60,7 @@ APP_URL=http://localhost:3000
 FINNHUB_KEY="digite aqui o código da chave API gerada no Finnhub"
 ```
 
-## 📦 Execução
+## ▶ Execução
 
 Após concluir a instalação e configurar o ambiente, execute o comando abaixo no terminal, dentro da pasta do projeto, para iniciar o servidor de desenvolvimento:
 

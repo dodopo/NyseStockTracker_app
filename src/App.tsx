@@ -626,26 +626,36 @@ export default function App() {
     const totalPct = totals.invested > 0 ? (totals.total / totals.invested) * 100 : 0;
 
     const modeToggle = (
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-tv-text/50">Unificado</span>
-        <button
-          onClick={() => setMode((m) => (m === "UNIFIED" ? "SEPARATED" : "UNIFIED"))}
-          className={cn(
-            "relative w-14 h-7 rounded-full border transition-colors",
-            mode === "SEPARATED" ? "bg-tv-accent/20 border-tv-accent/40" : "bg-white/5 border-white/20"
-          )}
-          title="Alternar visualização"
-        >
-          <span
-            className={cn(
-              "absolute top-0.5 w-6 h-6 rounded-full bg-white transition-transform",
-              mode === "SEPARATED" ? "translate-x-7" : "translate-x-1"
-            )}
-          />
-        </button>
-        <span className="text-xs text-tv-text/50">Separado</span>
-      </div>
-    );
+  <div className="flex items-center gap-3">
+    <span className={cn("text-xs transition-opacity", mode === "UNIFIED" ? "opacity-100" : "opacity-50")}>
+      Unificado
+    </span>
+
+    <button
+      type="button"
+      role="switch"
+      aria-checked={mode === "SEPARATED"}
+      onClick={() => setMode((m) => (m === "UNIFIED" ? "SEPARATED" : "UNIFIED"))}
+      className={cn(
+        "relative inline-flex h-7 w-14 items-center rounded-full border transition-colors",
+        "focus:outline-none focus:ring-2 focus:ring-tv-accent/40",
+        "bg-white/5 border-white/20"
+      )}
+      title="Alternar visualização"
+    >
+      <span
+        className={cn(
+          "inline-block h-6 w-6 transform rounded-full transition-transform bg-tv-text/90",
+          mode === "SEPARATED" ? "translate-x-7" : "translate-x-1"
+        )}
+      />
+    </button>
+
+    <span className={cn("text-xs transition-opacity", mode === "SEPARATED" ? "opacity-100" : "opacity-50")}>
+      Separado
+    </span>
+  </div>
+);
 
     return (
       <div className="space-y-6">
