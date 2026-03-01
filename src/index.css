@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-tv-bg: #131722;
+  --color-tv-card: #1e222d;
+  --color-tv-border: #2a2e39;
+  --color-tv-text: #d1d4dc;
+  --color-tv-accent: #2962ff;
+  --color-tv-up: #089981;
+  --color-tv-down: #f23645;
+}
+
+body {
+  background-color: var(--color-tv-bg);
+  color: var(--color-tv-text);
+  font-family: var(--font-sans);
+}
+
+.tv-card {
+  background-color: var(--color-tv-card);
+  border: 1px solid var(--color-tv-border);
+  border-radius: 4px;
+}
+
+.tv-input {
+  background-color: #2a2e39;
+  border: 1px solid #363c4e;
+  color: #d1d4dc;
+  padding: 8px 12px;
+  border-radius: 4px;
+  outline: none;
+}
+
+.tv-input:focus {
+  border-color: var(--color-tv-accent);
+}
+
+.tv-btn {
+  background-color: var(--color-tv-accent);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: 500;
+  transition: opacity 0.2s;
+}
+
+.tv-btn:hover {
+  opacity: 0.9;
+}
+
+.tv-btn-secondary {
+  background-color: #2a2e39;
+  color: #d1d4dc;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: 500;
+  border: 1px solid #363c4e;
+}
+
+.tv-btn-secondary:hover {
+  background-color: #363c4e;
+}
