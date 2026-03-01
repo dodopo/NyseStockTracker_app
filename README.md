@@ -60,6 +60,8 @@ FINNHUB_KEY="digite aqui o código da chave API gerada no Finnhub"
 
 ## 📦 Execução
 
+Pronto! Agora seu App está instalado, seu ambiente configurado, só basta executar o bash abaixo no CLI (Terminal) dentro da pasta que você baixou o app.
+
 ```bash
 npm run dev
 ```
