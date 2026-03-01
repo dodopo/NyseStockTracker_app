@@ -56,3 +56,10 @@ APP_URL=http://localhost:3000
 # Real-Time RESTful APIs and Websocket for Stocks, Currencies, and Crypto.
 # Access real-time stock API, institutional-grade fundamental and alternative data to supercharge your investment for FREE.
 FINNHUB_KEY="digite aqui o código da chave API gerada no Finnhub"
+
+
+## 📦 Execução
+
+```bash
+npm run dev
+```
