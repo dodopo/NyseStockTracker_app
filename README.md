@@ -74,3 +74,5 @@ http://localhost:3000
 Quando finalizar o uso, retorne ao terminal e encerre o servidor pressionando:
 
 Ctrl + C
+
+Last deploy test: 2026-03-02
