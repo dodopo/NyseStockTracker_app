@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format } from "date-fns";
-import { cn, formatCurrency, formatPercent, formatNumber } from "./lib/utils";
+import { cn, formatCurrency, formatPercent } from "./lib/utils";
 import type { Stock, Transaction, TransactionType, PortfolioItem, ConsolidationMode } from "./types";
 import { fetchQuotes, pricesToMap, searchStock, StockPrice } from "./services/marketService";
 
@@ -75,7 +75,6 @@ const Card = ({
 // PM calc (padrão corretora)
 // -----------------------------
 function calculatePMPosition(transactions: Transaction[], currentPrice: number) {
-  // Sort chronological (date ASC, id ASC) to ensure correct state
   const txs = [...transactions].sort((a, b) => {
     const d = a.date.localeCompare(b.date);
     if (d !== 0) return d;
@@ -83,7 +82,7 @@ function calculatePMPosition(transactions: Transaction[], currentPrice: number) 
   });
 
   let shares = 0;
-  let openCost = 0; // custo da posição em aberto
+  let openCost = 0;
   let realizedPnL = 0;
 
   for (const t of txs) {
@@ -94,15 +93,12 @@ function calculatePMPosition(transactions: Transaction[], currentPrice: number) 
       shares += qty;
       openCost += qty * px;
     } else {
-      // SELL (no-short should already be enforced by backend)
       if (qty > shares) {
-        // Defensive: ignore invalid to avoid NaN, but you should never reach here
         continue;
       }
       const avgCost = shares > 0 ? openCost / shares : 0;
       realizedPnL += (px - avgCost) * qty;
 
-      // Reduce position at avg cost
       shares -= qty;
       openCost -= avgCost * qty;
     }
@@ -119,7 +115,7 @@ function calculatePMPosition(transactions: Transaction[], currentPrice: number) 
   return {
     shares,
     avgCost,
-    openCost, // totalInvested (posição aberta)
+    openCost,
     marketValue,
     realizedPnL,
     unrealizedPnL,
@@ -141,6 +137,9 @@ export default function App() {
   const [prices, setPrices] = useState<Record<string, StockPrice>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Ações - manter seleção no nível do App
+  const [selectedStock, setSelectedStock] = useState<string | null>(null);
 
   // Consolidado view toggle
   const [mode, setMode] = useState<ConsolidationMode>("SEPARATED");
@@ -176,6 +175,18 @@ export default function App() {
     fetchData();
   }, []);
 
+  // Mantém a seleção válida mesmo quando a lista de ações muda
+  useEffect(() => {
+    if (!selectedStock && stocks[0]?.ticker) {
+      setSelectedStock(stocks[0].ticker);
+      return;
+    }
+
+    if (selectedStock && !stocks.some((s) => s.ticker === selectedStock)) {
+      setSelectedStock(stocks[0]?.ticker || null);
+    }
+  }, [stocks, selectedStock]);
+
   const refreshPrices = async () => {
     if (!stocks.length) return;
     setRefreshing(true);
@@ -193,8 +204,7 @@ export default function App() {
     const [searchQuery, setSearchQuery] = useState("");
     const [searching, setSearching] = useState(false);
     const [newStock, setNewStock] = useState<Stock | null>(null);
-
-    const [selectedStock, setSelectedStock] = useState<string | null>(stocks[0]?.ticker || null);
+    const [searchMessage, setSearchMessage] = useState<string | null>(null);
 
     const [transForm, setTransForm] = useState<{
       type: TransactionType;
@@ -210,24 +220,26 @@ export default function App() {
 
     const [apiError, setApiError] = useState<string | null>(null);
 
-    // Keep selection valid if stocks list changes
-    useEffect(() => {
-      if (!selectedStock && stocks[0]?.ticker) setSelectedStock(stocks[0].ticker);
-      if (selectedStock && !stocks.some((s) => s.ticker === selectedStock)) {
-        setSelectedStock(stocks[0]?.ticker || null);
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [stocks]);
-
     const handleSearch = async () => {
-      if (!searchQuery) return;
+      const query = searchQuery.trim();
+      if (!query) return;
+
       setSearching(true);
       setApiError(null);
+      setSearchMessage(null);
+      setNewStock(null);
+
       try {
-        const result = await searchStock(searchQuery);
+        const result = await searchStock(query);
+
+        if (!result) {
+          setSearchMessage(`Nenhum ativo encontrado para "${query}".`);
+          return;
+        }
+
         setNewStock(result);
       } catch (e) {
-        setNewStock(null);
+        setSearchMessage("Erro ao buscar ativo. Tente novamente.");
       } finally {
         setSearching(false);
       }
@@ -252,6 +264,7 @@ export default function App() {
       setStocks(updated);
       setNewStock(null);
       setSearchQuery("");
+      setSearchMessage(null);
       setSelectedStock(newStock.ticker);
       await loadPrices(updated.map((s: Stock) => s.ticker));
     };
@@ -295,11 +308,11 @@ export default function App() {
         return;
       }
 
-      // Refresh transactions
       const updatedTrans = await (await fetch("/api/transactions?order=desc")).json();
       setTransactions(updatedTrans);
 
-      // clear inputs
+      // mantém a ação selecionada e limpa apenas os campos de entrada
+      setSelectedStock(payload.ticker);
       setTransForm((s) => ({ ...s, shares: "", price: "" }));
     };
 
@@ -320,7 +333,6 @@ export default function App() {
 
     const pm = useMemo(() => {
       if (!selectedStock) return null;
-      // for accurate PM we need chronological; our calc sorts internally.
       return calculatePMPosition(txForSelected, currentPrice);
     }, [txForSelected, currentPrice, selectedStock]);
 
@@ -342,6 +354,12 @@ export default function App() {
                 {searching ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
               </button>
             </div>
+
+            {searchMessage && (
+              <div className="mt-3 text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded p-2">
+                {searchMessage}
+              </div>
+            )}
 
             {newStock && (
               <motion.div
@@ -430,7 +448,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Quick PM Summary */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <Card title="Posição (Qtd)">
                   <div className="text-2xl font-bold font-mono">{pm ? pm.shares : 0}</div>
@@ -442,7 +459,12 @@ export default function App() {
                   <div className="text-2xl font-bold font-mono">{formatCurrency(pm?.openCost || 0)}</div>
                 </Card>
                 <Card title="P/L Não Realizado">
-                  <div className={cn("text-2xl font-bold font-mono", (pm?.unrealizedPnL || 0) >= 0 ? "text-tv-up" : "text-tv-down")}>
+                  <div
+                    className={cn(
+                      "text-2xl font-bold font-mono",
+                      (pm?.unrealizedPnL || 0) >= 0 ? "text-tv-up" : "text-tv-down"
+                    )}
+                  >
                     {formatCurrency(pm?.unrealizedPnL || 0)}
                   </div>
                   <div className="text-xs text-tv-text/40">{(pm?.unrealizedPnLPct || 0).toFixed(2)}%</div>
@@ -450,7 +472,6 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Transaction form */}
                 <Card title="Nova Transação">
                   <form onSubmit={addTransaction} className="space-y-4">
                     <div className="flex gap-2 p-1 bg-white/5 rounded">
@@ -524,7 +545,6 @@ export default function App() {
                   </form>
                 </Card>
 
-                {/* Transactions list */}
                 <Card title="Histórico de Transações">
                   <div className="space-y-3 max-h-[340px] overflow-y-auto pr-2">
                     {txForSelected
@@ -540,7 +560,12 @@ export default function App() {
                           className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5"
                         >
                           <div>
-                            <div className={cn("text-xs font-bold", t.type === "BUY" ? "text-tv-up" : "text-tv-down")}>
+                            <div
+                              className={cn(
+                                "text-xs font-bold",
+                                t.type === "BUY" ? "text-tv-up" : "text-tv-down"
+                              )}
+                            >
                               {t.type === "BUY" ? "COMPRA" : "VENDA"}
                             </div>
                             <div className="text-sm font-mono">
@@ -592,14 +617,11 @@ export default function App() {
       return {
         ticker: s.ticker,
         name: s.name,
-
         shares: pm.shares,
         avgCost: pm.avgCost,
         totalInvested: pm.openCost,
-
         currentPrice,
         marketValue: pm.marketValue,
-
         unrealizedPnL: pm.unrealizedPnL,
         realizedPnL: pm.realizedPnL,
         totalPnL: pm.totalPnL,
@@ -626,40 +648,39 @@ export default function App() {
     const totalPct = totals.invested > 0 ? (totals.total / totals.invested) * 100 : 0;
 
     const modeToggle = (
-  <div className="flex items-center gap-3">
-    <span className={cn("text-xs transition-opacity", mode === "UNIFIED" ? "opacity-100" : "opacity-50")}>
-      Unificado
-    </span>
+      <div className="flex items-center gap-3">
+        <span className={cn("text-xs transition-opacity", mode === "UNIFIED" ? "opacity-100" : "opacity-50")}>
+          Unificado
+        </span>
 
-    <button
-      type="button"
-      role="switch"
-      aria-checked={mode === "SEPARATED"}
-      onClick={() => setMode((m) => (m === "UNIFIED" ? "SEPARATED" : "UNIFIED"))}
-      className={cn(
-        "relative inline-flex h-7 w-14 items-center rounded-full border transition-colors",
-        "focus:outline-none focus:ring-2 focus:ring-tv-accent/40",
-        "bg-white/5 border-white/20"
-      )}
-      title="Alternar visualização"
-    >
-      <span
-        className={cn(
-          "inline-block h-6 w-6 transform rounded-full transition-transform bg-tv-text/90",
-          mode === "SEPARATED" ? "translate-x-7" : "translate-x-1"
-        )}
-      />
-    </button>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={mode === "SEPARATED"}
+          onClick={() => setMode((m) => (m === "UNIFIED" ? "SEPARATED" : "UNIFIED"))}
+          className={cn(
+            "relative inline-flex h-7 w-14 items-center rounded-full border transition-colors",
+            "focus:outline-none focus:ring-2 focus:ring-tv-accent/40",
+            "bg-white/5 border-white/20"
+          )}
+          title="Alternar visualização"
+        >
+          <span
+            className={cn(
+              "inline-block h-6 w-6 transform rounded-full transition-transform bg-tv-text/90",
+              mode === "SEPARATED" ? "translate-x-7" : "translate-x-1"
+            )}
+          />
+        </button>
 
-    <span className={cn("text-xs transition-opacity", mode === "SEPARATED" ? "opacity-100" : "opacity-50")}>
-      Separado
-    </span>
-  </div>
-);
+        <span className={cn("text-xs transition-opacity", mode === "SEPARATED" ? "opacity-100" : "opacity-50")}>
+          Separado
+        </span>
+      </div>
+    );
 
     return (
       <div className="space-y-6">
-        {/* Summary */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <Card className="bg-tv-accent/10 border-tv-accent/30">
             <div className="text-[10px] uppercase text-tv-accent font-bold mb-1">Patrimônio (Aberto)</div>
@@ -799,7 +820,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-tv-bg text-tv-text flex flex-col">
-      {/* Header */}
       <header className="tv-card border-x-0 border-t-0 rounded-none px-6 py-4 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-tv-accent rounded flex items-center justify-center text-white">
@@ -827,7 +847,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Navigation */}
       <nav className="px-6 border-b border-tv-border flex overflow-x-auto no-scrollbar">
         <TabButton
           active={activeTab === "consolidado"}
@@ -843,7 +862,6 @@ export default function App() {
         />
       </nav>
 
-      {/* Main */}
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         <AnimatePresence mode="wait">
           <motion.div
@@ -859,7 +877,6 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Footer */}
       <footer className="p-6 text-center text-[10px] text-tv-text/20 uppercase tracking-widest font-bold">
         NYSE Portfolio Tracker &copy; {new Date().getFullYear()}
       </footer>
