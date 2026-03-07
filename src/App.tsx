@@ -10,12 +10,24 @@ import {
   ArrowDownRight,
   Loader2,
   RefreshCw,
+  LogOut,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format } from "date-fns";
 import { cn, formatCurrency, formatPercent } from "./lib/utils";
 import type { Stock, Transaction, TransactionType, PortfolioItem, ConsolidationMode } from "./types";
 import { fetchQuotes, pricesToMap, searchStock, StockPrice } from "./services/marketService";
+
+type AuthUser = {
+  id: number;
+  email: string;
+  displayName: string | null;
+  hasPassword: boolean;
+  hasFinnhubKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string | null;
+};
 
 // -----------------------------
 // UI building blocks
@@ -138,6 +150,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+
   // Ações - manter seleção no nível do App
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
 
@@ -171,8 +185,28 @@ export default function App() {
     }
   };
 
+  const bootstrapAuth = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/me");
+      const data = await res.json();
+
+      if (data?.authenticated && data?.user) {
+        setCurrentUser(data.user);
+        await fetchData();
+      } else {
+        setCurrentUser(null);
+        setLoading(false);
+      }
+    } catch (e) {
+      console.error("bootstrapAuth error:", e);
+      setCurrentUser(null);
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    fetchData();
+    bootstrapAuth();
   }, []);
 
   // Mantém a seleção válida mesmo quando a lista de ações muda
@@ -195,6 +229,299 @@ export default function App() {
     } finally {
       setRefreshing(false);
     }
+  };
+
+  const handleAuthSuccess = async (user: AuthUser) => {
+    setCurrentUser(user);
+    setStocks([]);
+    setTransactions([]);
+    setPrices({});
+    setSelectedStock(null);
+    setLoading(true);
+    await fetchData();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch (e) {
+      console.error("logout error:", e);
+    } finally {
+      setCurrentUser(null);
+      setStocks([]);
+      setTransactions([]);
+      setPrices({});
+      setSelectedStock(null);
+      setLoading(false);
+    }
+  };
+
+  // -----------------------------
+  // AUTH SCREEN
+  // -----------------------------
+  const AuthScreen = () => {
+    const [mode, setMode] = useState<"login" | "register">("login");
+    const [submitting, setSubmitting] = useState(false);
+    const [authError, setAuthError] = useState<string | null>(null);
+
+    const [form, setForm] = useState({
+      email: "",
+      displayName: "",
+      password: "",
+      confirmPassword: "",
+    });
+
+    const onChange = (field: keyof typeof form, value: string) => {
+      setForm((prev) => ({ ...prev, [field]: value }));
+    };
+
+    const submitRegister = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setSubmitting(true);
+      setAuthError(null);
+
+      try {
+        const res = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: form.email,
+            displayName: form.displayName,
+            password: form.password,
+            confirmPassword: form.confirmPassword,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          setAuthError(data?.error || "Falha ao criar conta");
+          return;
+        }
+
+        await handleAuthSuccess(data.user);
+      } catch (e) {
+        setAuthError("Erro ao criar conta. Tente novamente.");
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    const submitLogin = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setSubmitting(true);
+      setAuthError(null);
+
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: form.email,
+            password: form.password,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          setAuthError(data?.error || "Falha no login");
+          return;
+        }
+
+        await handleAuthSuccess(data.user);
+      } catch (e) {
+        setAuthError("Erro ao fazer login. Tente novamente.");
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-tv-bg text-tv-text flex items-center justify-center p-6">
+        <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card className="p-8 flex flex-col justify-center">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-12 h-12 bg-tv-accent rounded flex items-center justify-center text-white">
+                <TrendingUp size={26} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold leading-none">NYSE Tracker</h1>
+                <div className="text-xs uppercase tracking-widest text-tv-text/40 font-bold mt-1">
+                  Portfolio + Trades (PM)
+                </div>
+              </div>
+            </div>
+
+            <h2 className="text-3xl font-bold mb-4">
+              Controle sua carteira com acesso por usuário
+            </h2>
+
+            <div className="space-y-3 text-tv-text/70 leading-relaxed">
+              <p>Agora o app já está preparado para autenticação local com múltiplos usuários.</p>
+              <p>
+                Você pode criar uma conta com senha <strong>opcional</strong>, ideal para uso local
+                sem complicação nesta fase inicial.
+              </p>
+              <p>
+                Nos próximos passos, vamos adicionar onboarding da Finnhub key, isolamento de dados
+                por usuário e backup/import completo.
+              </p>
+            </div>
+          </Card>
+
+          <Card className="p-8">
+            <div className="flex gap-2 p-1 bg-white/5 rounded mb-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("login");
+                  setAuthError(null);
+                }}
+                className={cn(
+                  "flex-1 py-2 rounded text-sm font-bold transition-all",
+                  mode === "login" ? "bg-tv-accent text-white" : "text-tv-text/50"
+                )}
+              >
+                LOGIN
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("register");
+                  setAuthError(null);
+                }}
+                className={cn(
+                  "flex-1 py-2 rounded text-sm font-bold transition-all",
+                  mode === "register" ? "bg-tv-accent text-white" : "text-tv-text/50"
+                )}
+              >
+                CRIAR CONTA
+              </button>
+            </div>
+
+            {mode === "login" ? (
+              <form onSubmit={submitLogin} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">E-mail</label>
+                  <input
+                    type="email"
+                    className="tv-input w-full"
+                    value={form.email}
+                    onChange={(e) => onChange("email", e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
+                    Senha
+                  </label>
+                  <input
+                    type="password"
+                    className="tv-input w-full"
+                    value={form.password}
+                    onChange={(e) => onChange("password", e.target.value)}
+                    placeholder="Opcional se a conta foi criada sem senha"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="tv-btn w-full flex items-center justify-center gap-2"
+                >
+                  {submitting ? <Loader2 size={18} className="animate-spin" /> : null}
+                  Entrar
+                </button>
+
+                <div className="text-xs text-tv-text/50 leading-relaxed">
+                  Se a sua conta foi criada sem senha, basta informar o e-mail para entrar.
+                </div>
+
+                {authError && (
+                  <div className="text-xs text-tv-down bg-tv-down/10 border border-tv-down/30 rounded p-2">
+                    {authError}
+                  </div>
+                )}
+              </form>
+            ) : (
+              <form onSubmit={submitRegister} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
+                    Nome de exibição
+                  </label>
+                  <input
+                    type="text"
+                    className="tv-input w-full"
+                    value={form.displayName}
+                    onChange={(e) => onChange("displayName", e.target.value)}
+                    placeholder="Opcional"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">E-mail</label>
+                  <input
+                    type="email"
+                    className="tv-input w-full"
+                    value={form.email}
+                    onChange={(e) => onChange("email", e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
+                    Senha
+                  </label>
+                  <input
+                    type="password"
+                    className="tv-input w-full"
+                    value={form.password}
+                    onChange={(e) => onChange("password", e.target.value)}
+                    placeholder="Opcional para uso local"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
+                    Confirmar senha
+                  </label>
+                  <input
+                    type="password"
+                    className="tv-input w-full"
+                    value={form.confirmPassword}
+                    onChange={(e) => onChange("confirmPassword", e.target.value)}
+                    placeholder="Repita a senha apenas se definiu uma"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="tv-btn w-full flex items-center justify-center gap-2"
+                >
+                  {submitting ? <Loader2 size={18} className="animate-spin" /> : null}
+                  Criar conta
+                </button>
+
+                <div className="text-xs text-tv-text/50 leading-relaxed">
+                  A senha é opcional nesta fase inicial porque o app é local. Se você deixar em
+                  branco, qualquer pessoa com acesso a este computador poderá entrar nesta conta.
+                </div>
+
+                {authError && (
+                  <div className="text-xs text-tv-down bg-tv-down/10 border border-tv-down/30 rounded p-2">
+                    {authError}
+                  </div>
+                )}
+              </form>
+            )}
+          </Card>
+        </div>
+      </div>
+    );
   };
 
   // -----------------------------
@@ -311,7 +638,6 @@ export default function App() {
       const updatedTrans = await (await fetch("/api/transactions?order=desc")).json();
       setTransactions(updatedTrans);
 
-      // mantém a ação selecionada e limpa apenas os campos de entrada
       setSelectedStock(payload.ticker);
       setTransForm((s) => ({ ...s, shares: "", price: "" }));
     };
@@ -338,7 +664,6 @@ export default function App() {
 
     return (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Search + Stock list */}
         <div className="space-y-6">
           <Card title="Adicionar Ação">
             <div className="flex gap-2">
@@ -420,7 +745,6 @@ export default function App() {
           </Card>
         </div>
 
-        {/* Right: Selected stock + transactions */}
         <div className="lg:col-span-2 space-y-6">
           {selectedStock ? (
             <>
@@ -818,6 +1142,10 @@ export default function App() {
     );
   }
 
+  if (!currentUser) {
+    return <AuthScreen />;
+  }
+
   return (
     <div className="min-h-screen bg-tv-bg text-tv-text flex flex-col">
       <header className="tv-card border-x-0 border-t-0 rounded-none px-6 py-4 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
@@ -834,6 +1162,15 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
+          <div className="text-right hidden md:block">
+            <div className="text-sm font-semibold">
+              {currentUser.displayName || currentUser.email}
+            </div>
+            <div className="text-[10px] uppercase tracking-widest text-tv-text/40 font-bold">
+              {currentUser.hasPassword ? "Conta com senha" : "Conta local sem senha"}
+            </div>
+          </div>
+
           <button
             onClick={refreshPrices}
             className={cn(
@@ -843,6 +1180,14 @@ export default function App() {
             title="Atualizar preços"
           >
             <RefreshCw size={20} />
+          </button>
+
+          <button
+            onClick={handleLogout}
+            className="p-2 rounded hover:bg-white/5 transition-all text-tv-text/60 hover:text-tv-down"
+            title="Sair"
+          >
+            <LogOut size={20} />
           </button>
         </div>
       </header>

@@ -4,6 +4,8 @@ import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import bcrypt from "bcrypt";
+import { v4 as uuidv4 } from "uuid";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,6 +13,7 @@ const __dirname = path.dirname(__filename);
 // ----- Config -----
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === "production";
+const SESSION_COOKIE_NAME = "nyse_tracker_session";
 
 // ----- Database (absolute path) -----
 const dbPath = path.join(__dirname, "portfolio.db");
@@ -20,8 +23,43 @@ const db = new Database(dbPath);
 db.pragma("foreign_keys = ON");
 db.pragma("journal_mode = WAL");
 
-// Initialize Database
+// -----------------------------
+// Database schema
+// -----------------------------
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    password_hash TEXT,
+    recovery_key_hash TEXT,
+    finnhub_key TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_login_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS user_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    default_port INTEGER,
+    theme TEXT,
+    currency TEXT,
+    include_secrets_in_backup INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    session_token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS stocks (
     ticker TEXT PRIMARY KEY,
     name TEXT NOT NULL
@@ -38,7 +76,9 @@ db.exec(`
   );
 `);
 
+// -----------------------------
 // Prepared statements
+// -----------------------------
 const stmtGetStocks = db.prepare("SELECT * FROM stocks ORDER BY ticker ASC");
 const stmtInsertStock = db.prepare("INSERT INTO stocks (ticker, name) VALUES (?, ?)");
 const stmtDeleteStock = db.prepare("DELETE FROM stocks WHERE ticker = ?");
@@ -62,8 +102,56 @@ const stmtSumSharesByType = db.prepare(`
   WHERE ticker = ?
 `);
 
+const stmtGetUserByEmail = db.prepare(`
+  SELECT id, email, display_name, password_hash, recovery_key_hash, finnhub_key, created_at, updated_at, last_login_at
+  FROM users
+  WHERE email = ?
+`);
+
+const stmtGetUserById = db.prepare(`
+  SELECT id, email, display_name, password_hash, recovery_key_hash, finnhub_key, created_at, updated_at, last_login_at
+  FROM users
+  WHERE id = ?
+`);
+
+const stmtInsertUser = db.prepare(`
+  INSERT INTO users (email, display_name, password_hash, recovery_key_hash, finnhub_key, created_at, updated_at, last_login_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtInsertUserSettings = db.prepare(`
+  INSERT INTO user_settings (user_id, default_port, theme, currency, include_secrets_in_backup, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtInsertSession = db.prepare(`
+  INSERT INTO sessions (user_id, session_token, created_at, expires_at)
+  VALUES (?, ?, ?, ?)
+`);
+
+const stmtGetSessionByToken = db.prepare(`
+  SELECT s.id, s.user_id, s.session_token, s.created_at, s.expires_at
+  FROM sessions s
+  WHERE s.session_token = ?
+`);
+
+const stmtDeleteSessionByToken = db.prepare(`
+  DELETE FROM sessions
+  WHERE session_token = ?
+`);
+
+const stmtUpdateLastLoginAt = db.prepare(`
+  UPDATE users
+  SET last_login_at = ?, updated_at = ?
+  WHERE id = ?
+`);
+
 function normalizeTicker(value: unknown) {
   return String(value || "").trim().toUpperCase();
+}
+
+function normalizeEmail(value: unknown) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function badRequest(res: express.Response, msg: string) {
@@ -76,7 +164,94 @@ function requireEnv(name: string) {
   return v;
 }
 
-// ----- Finnhub helpers -----
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function parseCookies(cookieHeader?: string) {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+
+  const parts = cookieHeader.split(";");
+  for (const part of parts) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    out[key] = decodeURIComponent(value);
+  }
+  return out;
+}
+
+function getSessionTokenFromReq(req: express.Request) {
+  const cookies = parseCookies(req.headers.cookie);
+  return cookies[SESSION_COOKIE_NAME] || null;
+}
+
+function setSessionCookie(res: express.Response, token: string) {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+
+  if (IS_PROD) {
+    parts.push("Secure");
+  }
+
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearSessionCookie(res: express.Response) {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+
+  if (IS_PROD) {
+    parts.push("Secure");
+  }
+
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function getSafeUser(user: any) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    hasPassword: !!user.password_hash,
+    hasFinnhubKey: !!user.finnhub_key,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+    lastLoginAt: user.last_login_at,
+  };
+}
+
+function getUserFromSession(req: express.Request) {
+  const token = getSessionTokenFromReq(req);
+  if (!token) return null;
+
+  const session = stmtGetSessionByToken.get(token) as
+    | { id: number; user_id: number; session_token: string; created_at: string; expires_at: string | null }
+    | undefined;
+
+  if (!session) return null;
+
+  const user = stmtGetUserById.get(session.user_id);
+  if (!user) return null;
+
+  return { session, user };
+}
+
+// -----------------------------
+// Finnhub helpers
+// -----------------------------
 async function finnhubFetchJson(url: string) {
   const r = await fetch(url);
   if (!r.ok) {
@@ -86,7 +261,9 @@ async function finnhubFetchJson(url: string) {
   return r.json();
 }
 
-// ----- Quote cache -----
+// -----------------------------
+// Quote cache
+// -----------------------------
 type QuoteCacheEntry = {
   value: any;
   expiresAt: number;
@@ -140,6 +317,149 @@ async function getQuoteCached(symbolInput: unknown) {
 async function startServer() {
   const app = express();
   app.use(express.json());
+
+  // -------------------------
+  // API Routes (Auth)
+  // -------------------------
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const displayName = String(req.body?.displayName || "").trim() || null;
+      const password = String(req.body?.password || "");
+      const confirmPassword = String(req.body?.confirmPassword || "");
+
+      if (!email) return badRequest(res, "Missing email");
+      if (!email.includes("@")) return badRequest(res, "Invalid email");
+
+      if (password !== confirmPassword) {
+        return badRequest(res, "Password confirmation does not match");
+      }
+
+      const existing = stmtGetUserByEmail.get(email);
+      if (existing) {
+        return badRequest(res, "User already exists");
+      }
+
+      const timestamp = nowIso();
+      const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+
+      const insertUserTx = db.transaction(() => {
+        const userInfo = stmtInsertUser.run(
+          email,
+          displayName,
+          passwordHash,
+          null,
+          null,
+          timestamp,
+          timestamp,
+          null
+        );
+
+        const userId = Number(userInfo.lastInsertRowid);
+
+        stmtInsertUserSettings.run(
+          userId,
+          PORT,
+          "dark",
+          "USD",
+          1,
+          timestamp,
+          timestamp
+        );
+
+        const sessionToken = uuidv4();
+
+        stmtInsertSession.run(userId, sessionToken, timestamp, null);
+
+        return { userId, sessionToken };
+      });
+
+      const { userId, sessionToken } = insertUserTx();
+
+      const user = stmtGetUserById.get(userId);
+      setSessionCookie(res, sessionToken);
+
+      res.status(201).json({
+        success: true,
+        user: getSafeUser(user),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Register failed" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const password = String(req.body?.password || "");
+
+      if (!email) return badRequest(res, "Missing email");
+
+      const user = stmtGetUserByEmail.get(email) as any;
+      if (!user) {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      if (user.password_hash) {
+        const ok = await bcrypt.compare(password, user.password_hash);
+        if (!ok) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
+      }
+
+      const timestamp = nowIso();
+      const sessionToken = uuidv4();
+
+      stmtInsertSession.run(user.id, sessionToken, timestamp, null);
+      stmtUpdateLastLoginAt.run(timestamp, timestamp, user.id);
+
+      const updatedUser = stmtGetUserById.get(user.id);
+
+      setSessionCookie(res, sessionToken);
+
+      res.json({
+        success: true,
+        user: getSafeUser(updatedUser),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Login failed" });
+    }
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    try {
+      const token = getSessionTokenFromReq(req);
+      if (token) {
+        stmtDeleteSessionByToken.run(token);
+      }
+
+      clearSessionCookie(res);
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Logout failed" });
+    }
+  });
+
+  app.get("/api/auth/me", (req, res) => {
+    try {
+      const auth = getUserFromSession(req);
+
+      if (!auth) {
+        return res.json({
+          authenticated: false,
+          user: null,
+        });
+      }
+
+      res.json({
+        authenticated: true,
+        user: getSafeUser(auth.user),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to fetch current user" });
+    }
+  });
 
   // -------------------------
   // API Routes (Portfolio CRUD)
