@@ -4,11 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project aims to follow Semantic Versioning (SemVer).
 
 ## [Unreleased]
+
 ### Added
--
+- In-memory quote cache for Finnhub market data.
+- Configurable cache TTL through the `QUOTE_CACHE_TTL_MS` environment variable.
+- Debug response headers for quote requests:
+  - `X-Cache: HIT | MISS`
+  - `X-Cache-TTL-MS`
 
 ### Changed
--
+- Refactored `/api/quote` to reuse cached Finnhub responses when available.
+- Refactored `/api/prices` to use the same internal cached quote logic instead of calling `localhost` in a loop.
 
 ### Fixed
 -

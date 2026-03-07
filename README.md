@@ -1,20 +1,49 @@
 # NyseStockTracker_app
 
-Aplicação para acompanhamento e análise de posições em ações, com histórico de operações e métricas de performance.
+Aplicação web full-stack para acompanhamento e análise de posições em ações da NYSE, com histórico de operações, cálculo de preço médio e métricas de performance.
+
+## 😎 Visão Geral
+
+O projeto permite:
+
+- registrar compras e vendas de ações
+- acompanhar histórico de transações
+- calcular preço médio ponderado (PM)
+- acompanhar lucro/prejuízo realizado e não realizado
+- visualizar o consolidado da carteira
+- buscar preços de mercado via API externa (Finnhub)
+- reduzir chamadas repetidas à API com cache em memória no backend
+
 
 ## 🚀 Tecnologias
 
-- React + TypeScript
-- Node.js (servidor de desenvolvimento via `server.ts`)
+### Frontend
+- React
+- TypeScript
 - Vite (build e preview)
+- Tailwind CSS
+
+### Backend
+- Node.js (servidor de desenvolvimento via `server.ts`)
+- Express
+- TypeScript
+
+### Banco de dados
 - SQLite (armazenamento local)
 
-Fucnionalidades dessa versão:
+### API externa
+- Finnhub
 
-	•	Registro de compras e vendas
-	•	Cálculo de preço médio
-	•	Histórico de transações
-	•	Dashboard de performance
+
+## Funcionalidades atuais
+
+- Registro de ações na carteira
+- Registro de transações de compra e venda
+- Cálculo de preço médio
+- Histórico de transações
+- Dashboard consolidado
+- Busca de preços de mercado
+- Cache de cotações no backend com TTL configurável
 
 
 ## 📦 Instalação
@@ -50,14 +79,16 @@ Na raiz do projeto, crie um arquivo chamado `.env` com o seguinte conteúdo:
 
 ```env
 # APP_URL: The URL where this applet is hosted.
-# AI Studio automatically injects this at runtime with the Cloud Run service URL.
-# Used for self-referential links, OAuth callbacks, and API endpoints.
+PORT=3000
 APP_URL=http://localhost:3000
 
 # FINNHUB_KEY: Finnhub Stock API
 # Real-Time RESTful APIs and Websocket for Stocks, Currencies, and Crypto.
 # Access real-time stock API, institutional-grade fundamental and alternative data to supercharge your investment for FREE.
 FINNHUB_KEY="digite aqui o código da chave API gerada no Finnhub"
+
+# CACHE
+QUOTE_CACHE_TTL_MS=30000
 ```
 
 ## ▶ Execução
@@ -75,4 +106,3 @@ Quando finalizar o uso, retorne ao terminal e encerre o servidor pressionando:
 
 Ctrl + C
 
-Last deploy test: 2026-03-02
