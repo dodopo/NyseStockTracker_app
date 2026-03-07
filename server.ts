@@ -1,6 +1,4 @@
-// server.ts
 import "dotenv/config";
-
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
@@ -40,29 +38,22 @@ db.exec(`
   );
 `);
 
-// Prepared statements (faster + cleaner)
+// Prepared statements
 const stmtGetStocks = db.prepare("SELECT * FROM stocks ORDER BY ticker ASC");
 const stmtInsertStock = db.prepare("INSERT INTO stocks (ticker, name) VALUES (?, ?)");
 const stmtDeleteStock = db.prepare("DELETE FROM stocks WHERE ticker = ?");
 const stmtDeleteTransactionsByTicker = db.prepare("DELETE FROM transactions WHERE ticker = ?");
-
 const stmtGetTransactionsAll = db.prepare("SELECT * FROM transactions ORDER BY date ASC, id ASC");
 const stmtGetTransactionsByTicker = db.prepare(
   "SELECT * FROM transactions WHERE ticker = ? ORDER BY date ASC, id ASC"
 );
-
-// NOTE: UI likes newest-first lists sometimes; we can also keep this:
 const stmtGetTransactionsDesc = db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC");
-
 const stmtInsertTransaction = db.prepare(
   "INSERT INTO transactions (ticker, type, shares, price, date) VALUES (?, ?, ?, ?, ?)"
 );
 const stmtDeleteTransactionById = db.prepare("DELETE FROM transactions WHERE id = ?");
-
 const stmtGetStockByTicker = db.prepare("SELECT ticker FROM stocks WHERE ticker = ?");
 
-// For "no short" validation (PM holdings rule):
-// We compute current shares (buys - sells) for a ticker.
 const stmtSumSharesByType = db.prepare(`
   SELECT
     COALESCE(SUM(CASE WHEN type='BUY' THEN shares ELSE 0 END), 0) AS buyShares,
@@ -95,6 +86,57 @@ async function finnhubFetchJson(url: string) {
   return r.json();
 }
 
+// ----- Quote cache -----
+type QuoteCacheEntry = {
+  value: any;
+  expiresAt: number;
+};
+
+const QUOTE_CACHE_TTL_MS = Number(process.env.QUOTE_CACHE_TTL_MS || 30_000);
+const quoteCache = new Map<string, QuoteCacheEntry>();
+
+async function fetchFinnhubQuote(symbol: string) {
+  const key = requireEnv("FINNHUB_KEY");
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(
+    key
+  )}`;
+  return finnhubFetchJson(url);
+}
+
+async function getQuoteCached(symbolInput: unknown) {
+  const symbol = normalizeTicker(symbolInput);
+
+  if (!symbol) {
+    throw new Error("Missing symbol");
+  }
+
+  const now = Date.now();
+  const cached = quoteCache.get(symbol);
+
+  if (cached && cached.expiresAt > now) {
+    return {
+      symbol,
+      raw: cached.value,
+      cacheHit: true,
+      ttlMs: cached.expiresAt - now,
+    };
+  }
+
+  const raw = await fetchFinnhubQuote(symbol);
+
+  quoteCache.set(symbol, {
+    value: raw,
+    expiresAt: now + QUOTE_CACHE_TTL_MS,
+  });
+
+  return {
+    symbol,
+    raw,
+    cacheHit: false,
+    ttlMs: QUOTE_CACHE_TTL_MS,
+  };
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -117,7 +159,7 @@ async function startServer() {
     try {
       stmtInsertStock.run(ticker, name);
       res.status(201).json({ ticker, name });
-    } catch (error) {
+    } catch {
       res.status(400).json({ error: "Stock already exists or invalid data" });
     }
   });
@@ -126,7 +168,6 @@ async function startServer() {
     const ticker = normalizeTicker(req.params.ticker);
     if (!ticker) return badRequest(res, "Invalid ticker");
 
-    // Delete dependent rows first
     stmtDeleteTransactionsByTicker.run(ticker);
     stmtDeleteStock.run(ticker);
 
@@ -136,15 +177,6 @@ async function startServer() {
   // -------------------------
   // API Routes (Transactions)
   // -------------------------
-
-  /**
-   * GET /api/transactions
-   * Optional:
-   *   - ?ticker=AAPL   -> only that ticker (chronological, for PM calc)
-   *   - ?order=desc    -> newest first (for UI list)
-   *
-   * Default: chronological ASC (safe for PM calc)
-   */
   app.get("/api/transactions", (req, res) => {
     const ticker = req.query.ticker ? normalizeTicker(req.query.ticker) : "";
     const order = String(req.query.order || "").toLowerCase();
@@ -163,21 +195,14 @@ async function startServer() {
     return res.json(rows);
   });
 
-  /**
-   * POST /api/transactions
-   * Body: { ticker, type: BUY|SELL, shares, price, date }
-   *
-   * Validations:
-   * - ticker exists (required)
-   * - shares > 0, price > 0
-   * - no short: SELL cannot exceed current held shares
-   */
   app.post("/api/transactions", (req, res) => {
     const ticker = normalizeTicker(req.body?.ticker);
-    const type = String(req.body?.type || "").trim().toUpperCase();
+    const type = String(req.body?.type || "")
+      .trim()
+      .toUpperCase();
     const shares = Number(req.body?.shares);
     const price = Number(req.body?.price);
-    const date = String(req.body?.date || "").trim(); // expected YYYY-MM-DD
+    const date = String(req.body?.date || "").trim();
 
     if (!ticker) return badRequest(res, "Missing ticker");
     if (type !== "BUY" && type !== "SELL") return badRequest(res, "Invalid type (BUY/SELL)");
@@ -185,14 +210,13 @@ async function startServer() {
     if (!Number.isFinite(price) || price <= 0) return badRequest(res, "Invalid price");
     if (!date) return badRequest(res, "Missing date");
 
-    // Ensure stock exists (so UI must add stock before recording trades)
     const exists = stmtGetStockByTicker.get(ticker);
     if (!exists) return badRequest(res, "Ticker not found in portfolio. Add the stock first.");
 
-    // No-short validation for SELL
     if (type === "SELL") {
       const sums = stmtSumSharesByType.get(ticker) as { buyShares: number; sellShares: number };
       const held = (sums?.buyShares || 0) - (sums?.sellShares || 0);
+
       if (shares > held + 1e-9) {
         return badRequest(res, `Cannot SELL ${shares}. Current held shares: ${held}. (No short allowed)`);
       }
@@ -201,7 +225,7 @@ async function startServer() {
     try {
       const info = stmtInsertTransaction.run(ticker, type, shares, price, date);
       res.status(201).json({ success: true, id: info.lastInsertRowid });
-    } catch (error) {
+    } catch {
       res.status(400).json({ error: "Invalid transaction data" });
     }
   });
@@ -219,7 +243,7 @@ async function startServer() {
   // -------------------------
   app.get("/api/export", (req, res) => {
     const stocks = stmtGetStocks.all();
-    const transactions = stmtGetTransactionsDesc.all(); // export newest-first (just preference)
+    const transactions = stmtGetTransactionsDesc.all();
     res.json({ stocks, transactions });
   });
 
@@ -240,24 +264,34 @@ async function startServer() {
           if (t && n) insertStock.run(t, n);
         }
 
-        // For imports, we’ll insert what’s valid. No-short can be violated by historical order,
-        // so we DO NOT enforce no-short here (it’s a backup restore).
         for (const tr of transactions) {
           const t = normalizeTicker(tr?.ticker);
-          const ty = String(tr?.type || "").trim().toUpperCase();
+          const ty = String(tr?.type || "")
+            .trim()
+            .toUpperCase();
           const sh = Number(tr?.shares);
           const pr = Number(tr?.price);
           const dt = String(tr?.date || "").trim();
-          if (!t || (ty !== "BUY" && ty !== "SELL") || !Number.isFinite(sh) || sh <= 0 || !Number.isFinite(pr) || pr <= 0 || !dt) {
+
+          if (
+            !t ||
+            (ty !== "BUY" && ty !== "SELL") ||
+            !Number.isFinite(sh) ||
+            sh <= 0 ||
+            !Number.isFinite(pr) ||
+            pr <= 0 ||
+            !dt
+          ) {
             continue;
           }
+
           insertTrans.run(t, ty, sh, pr, dt);
         }
       });
 
       tx();
       res.json({ success: true });
-    } catch (error) {
+    } catch {
       res.status(400).json({ error: "Failed to import data" });
     }
   });
@@ -265,54 +299,46 @@ async function startServer() {
   // -------------------------
   // API Routes (Market Data via Finnhub)
   // -------------------------
-
-  // Search symbol/company
-  // Supports: /api/search?q=AAPL  OR /api/search?ticker=AAPL
   app.get("/api/search", async (req, res) => {
     try {
       const qRaw = (req.query.q ?? req.query.ticker ?? req.query.symbol) as unknown;
       const q = String(qRaw || "").trim();
+
       if (!q) return badRequest(res, "Missing query (q/ticker/symbol)");
 
       const key = requireEnv("FINNHUB_KEY");
-      const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${key}`;
+      const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${encodeURIComponent(key)}`;
       const data = await finnhubFetchJson(url);
+
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Search failed" });
     }
   });
 
-  // Quote for one symbol
-  // /api/quote?symbol=AAPL
   app.get("/api/quote", async (req, res) => {
     try {
-      const symbol = normalizeTicker(req.query.symbol ?? req.query.ticker);
-      if (!symbol) return badRequest(res, "Missing symbol");
+      const { symbol, raw, cacheHit, ttlMs } = await getQuoteCached(req.query.symbol ?? req.query.ticker);
 
-      const key = requireEnv("FINNHUB_KEY");
-      const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${key}`;
-      const q = await finnhubFetchJson(url);
+      res.setHeader("X-Cache", cacheHit ? "HIT" : "MISS");
+      res.setHeader("X-Cache-TTL-MS", String(ttlMs));
 
-      // Finnhub response: c=current, d=change, dp=%change, h=high, l=low, o=open, pc=prev close
       res.json({
         symbol,
-        price: q.c ?? null,
-        change: q.d ?? null,
-        changePct: q.dp ?? null,
-        high: q.h ?? null,
-        low: q.l ?? null,
-        open: q.o ?? null,
-        prevClose: q.pc ?? null,
-        raw: q,
+        price: raw?.c ?? null,
+        change: raw?.d ?? null,
+        changePct: raw?.dp ?? null,
+        high: raw?.h ?? null,
+        low: raw?.l ?? null,
+        open: raw?.o ?? null,
+        prevClose: raw?.pc ?? null,
+        raw,
       });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Quote failed" });
     }
   });
 
-  // Batch quotes (simple loop)
-  // /api/prices?symbols=AAPL,TSLA,MSTR
   app.get("/api/prices", async (req, res) => {
     try {
       const symbolsParam = String(req.query.symbols || "").trim();
@@ -320,16 +346,31 @@ async function startServer() {
 
       const symbols = symbolsParam
         .split(",")
-        .map((s) => s.trim().toUpperCase())
+        .map((s) => normalizeTicker(s))
         .filter(Boolean);
 
       if (symbols.length === 0) return badRequest(res, "No valid symbols");
 
       const results: Record<string, any> = {};
-      for (const sym of symbols) {
-        const r = await fetch(`http://localhost:${PORT}/api/quote?symbol=${encodeURIComponent(sym)}`);
-        results[sym] = await r.json();
-      }
+
+      await Promise.all(
+        symbols.map(async (sym) => {
+          const { symbol, raw } = await getQuoteCached(sym);
+
+          results[symbol] = {
+            symbol,
+            price: raw?.c ?? null,
+            change: raw?.d ?? null,
+            changePct: raw?.dp ?? null,
+            high: raw?.h ?? null,
+            low: raw?.l ?? null,
+            open: raw?.o ?? null,
+            prevClose: raw?.pc ?? null,
+            raw,
+          };
+        })
+      );
+
       res.json(results);
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Prices failed" });
@@ -337,8 +378,7 @@ async function startServer() {
   });
 
   // -------------------------
-  // IMPORTANT: Unknown /api routes => JSON 404 (NOT HTML)
-  // Must be BEFORE Vite middleware.
+  // IMPORTANT: Unknown /api routes => JSON 404
   // -------------------------
   app.use("/api", (req, res) => {
     res.status(404).json({ error: "API route not found", path: req.originalUrl });
@@ -352,9 +392,11 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa",
     });
+
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(__dirname, "dist")));
+
     app.get("*", (req, res) => {
       res.sendFile(path.join(__dirname, "dist", "index.html"));
     });
