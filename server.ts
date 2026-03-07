@@ -24,7 +24,7 @@ db.pragma("foreign_keys = ON");
 db.pragma("journal_mode = WAL");
 
 // -----------------------------
-// Database schema
+// Base schema (auth/session tables)
 // -----------------------------
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -59,47 +59,129 @@ db.exec(`
     expires_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
-
-  CREATE TABLE IF NOT EXISTS stocks (
-    ticker TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker TEXT NOT NULL,
-    type TEXT CHECK(type IN ('BUY', 'SELL')) NOT NULL,
-    shares REAL NOT NULL,
-    price REAL NOT NULL,
-    date TEXT NOT NULL,
-    FOREIGN KEY (ticker) REFERENCES stocks(ticker)
-  );
 `);
+
+function tableHasColumn(tableName: string, columnName: string) {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === columnName);
+}
+
+// -----------------------------
+// Ensure portfolio tables are user-scoped
+// If old global tables still exist, reset them once.
+// -----------------------------
+function ensureUserScopedPortfolioTables() {
+  const stocksExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='stocks'`)
+    .get();
+  const transactionsExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'`)
+    .get();
+
+  const stocksScoped = stocksExists ? tableHasColumn("stocks", "user_id") : false;
+  const transactionsScoped = transactionsExists ? tableHasColumn("transactions", "user_id") : false;
+
+  if (!stocksExists || !transactionsExists || !stocksScoped || !transactionsScoped) {
+    db.exec(`
+      DROP TABLE IF EXISTS transactions;
+      DROP TABLE IF EXISTS stocks;
+
+      CREATE TABLE stocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        ticker TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE (user_id, ticker)
+      );
+
+      CREATE TABLE transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        ticker TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('BUY', 'SELL')),
+        shares REAL NOT NULL,
+        price REAL NOT NULL,
+        date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id, ticker) REFERENCES stocks(user_id, ticker) ON DELETE CASCADE
+      );
+    `);
+  }
+}
+
+ensureUserScopedPortfolioTables();
 
 // -----------------------------
 // Prepared statements
 // -----------------------------
-const stmtGetStocks = db.prepare("SELECT * FROM stocks ORDER BY ticker ASC");
-const stmtInsertStock = db.prepare("INSERT INTO stocks (ticker, name) VALUES (?, ?)");
-const stmtDeleteStock = db.prepare("DELETE FROM stocks WHERE ticker = ?");
-const stmtDeleteTransactionsByTicker = db.prepare("DELETE FROM transactions WHERE ticker = ?");
-const stmtGetTransactionsAll = db.prepare("SELECT * FROM transactions ORDER BY date ASC, id ASC");
-const stmtGetTransactionsByTicker = db.prepare(
-  "SELECT * FROM transactions WHERE ticker = ? ORDER BY date ASC, id ASC"
-);
-const stmtGetTransactionsDesc = db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC");
-const stmtInsertTransaction = db.prepare(
-  "INSERT INTO transactions (ticker, type, shares, price, date) VALUES (?, ?, ?, ?, ?)"
-);
-const stmtDeleteTransactionById = db.prepare("DELETE FROM transactions WHERE id = ?");
-const stmtGetStockByTicker = db.prepare("SELECT ticker FROM stocks WHERE ticker = ?");
+const stmtGetStocks = db.prepare(`
+  SELECT id, user_id, ticker, name, created_at
+  FROM stocks
+  WHERE user_id = ?
+  ORDER BY ticker ASC
+`);
+
+const stmtInsertStock = db.prepare(`
+  INSERT INTO stocks (user_id, ticker, name, created_at)
+  VALUES (?, ?, ?, ?)
+`);
+
+const stmtDeleteStock = db.prepare(`
+  DELETE FROM stocks
+  WHERE user_id = ? AND ticker = ?
+`);
+
+const stmtDeleteTransactionsByTicker = db.prepare(`
+  DELETE FROM transactions
+  WHERE user_id = ? AND ticker = ?
+`);
+
+const stmtGetTransactionsAll = db.prepare(`
+  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  FROM transactions
+  WHERE user_id = ?
+  ORDER BY date ASC, id ASC
+`);
+
+const stmtGetTransactionsByTicker = db.prepare(`
+  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  FROM transactions
+  WHERE user_id = ? AND ticker = ?
+  ORDER BY date ASC, id ASC
+`);
+
+const stmtGetTransactionsDesc = db.prepare(`
+  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  FROM transactions
+  WHERE user_id = ?
+  ORDER BY date DESC, id DESC
+`);
+
+const stmtInsertTransaction = db.prepare(`
+  INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtDeleteTransactionById = db.prepare(`
+  DELETE FROM transactions
+  WHERE user_id = ? AND id = ?
+`);
+
+const stmtGetStockByTicker = db.prepare(`
+  SELECT id, user_id, ticker, name, created_at
+  FROM stocks
+  WHERE user_id = ? AND ticker = ?
+`);
 
 const stmtSumSharesByType = db.prepare(`
   SELECT
     COALESCE(SUM(CASE WHEN type='BUY' THEN shares ELSE 0 END), 0) AS buyShares,
     COALESCE(SUM(CASE WHEN type='SELL' THEN shares ELSE 0 END), 0) AS sellShares
   FROM transactions
-  WHERE ticker = ?
+  WHERE user_id = ? AND ticker = ?
 `);
 
 const stmtGetUserByEmail = db.prepare(`
@@ -156,12 +238,6 @@ function normalizeEmail(value: unknown) {
 
 function badRequest(res: express.Response, msg: string) {
   return res.status(400).json({ error: msg });
-}
-
-function requireEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
 }
 
 function nowIso() {
@@ -249,6 +325,19 @@ function getUserFromSession(req: express.Request) {
   return { session, user };
 }
 
+function requireAuth(req: express.Request, res: express.Response) {
+  const auth = getUserFromSession(req);
+  if (!auth) {
+    res.status(401).json({ error: "Unauthorized" });
+    return null;
+  }
+  return auth;
+}
+
+function getFinnhubKeyForUser(user: any) {
+  return user?.finnhub_key || process.env.FINNHUB_KEY || null;
+}
+
 // -----------------------------
 // Finnhub helpers
 // -----------------------------
@@ -272,15 +361,14 @@ type QuoteCacheEntry = {
 const QUOTE_CACHE_TTL_MS = Number(process.env.QUOTE_CACHE_TTL_MS || 30_000);
 const quoteCache = new Map<string, QuoteCacheEntry>();
 
-async function fetchFinnhubQuote(symbol: string) {
-  const key = requireEnv("FINNHUB_KEY");
+async function fetchFinnhubQuote(symbol: string, apiKey: string) {
   const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(
-    key
+    apiKey
   )}`;
   return finnhubFetchJson(url);
 }
 
-async function getQuoteCached(symbolInput: unknown) {
+async function getQuoteCached(symbolInput: unknown, apiKey: string) {
   const symbol = normalizeTicker(symbolInput);
 
   if (!symbol) {
@@ -299,7 +387,7 @@ async function getQuoteCached(symbolInput: unknown) {
     };
   }
 
-  const raw = await fetchFinnhubQuote(symbol);
+  const raw = await fetchFinnhubQuote(symbol, apiKey);
 
   quoteCache.set(symbol, {
     value: raw,
@@ -368,15 +456,14 @@ async function startServer() {
         );
 
         const sessionToken = uuidv4();
-
         stmtInsertSession.run(userId, sessionToken, timestamp, null);
 
         return { userId, sessionToken };
       });
 
       const { userId, sessionToken } = insertUserTx();
-
       const user = stmtGetUserById.get(userId);
+
       setSessionCookie(res, sessionToken);
 
       res.status(201).json({
@@ -434,7 +521,6 @@ async function startServer() {
       }
 
       clearSessionCookie(res);
-
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Logout failed" });
@@ -465,11 +551,17 @@ async function startServer() {
   // API Routes (Portfolio CRUD)
   // -------------------------
   app.get("/api/stocks", (req, res) => {
-    const stocks = stmtGetStocks.all();
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
+    const stocks = stmtGetStocks.all(auth.user.id);
     res.json(stocks);
   });
 
   app.post("/api/stocks", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const ticker = normalizeTicker(req.body?.ticker);
     const name = String(req.body?.name || "").trim();
 
@@ -477,7 +569,7 @@ async function startServer() {
     if (!name) return badRequest(res, "Missing name");
 
     try {
-      stmtInsertStock.run(ticker, name);
+      stmtInsertStock.run(auth.user.id, ticker, name, nowIso());
       res.status(201).json({ ticker, name });
     } catch {
       res.status(400).json({ error: "Stock already exists or invalid data" });
@@ -485,11 +577,14 @@ async function startServer() {
   });
 
   app.delete("/api/stocks/:ticker", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const ticker = normalizeTicker(req.params.ticker);
     if (!ticker) return badRequest(res, "Invalid ticker");
 
-    stmtDeleteTransactionsByTicker.run(ticker);
-    stmtDeleteStock.run(ticker);
+    stmtDeleteTransactionsByTicker.run(auth.user.id, ticker);
+    stmtDeleteStock.run(auth.user.id, ticker);
 
     res.status(204).send();
   });
@@ -498,24 +593,30 @@ async function startServer() {
   // API Routes (Transactions)
   // -------------------------
   app.get("/api/transactions", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const ticker = req.query.ticker ? normalizeTicker(req.query.ticker) : "";
     const order = String(req.query.order || "").toLowerCase();
 
     if (ticker) {
-      const rows = stmtGetTransactionsByTicker.all(ticker);
+      const rows = stmtGetTransactionsByTicker.all(auth.user.id, ticker);
       return res.json(rows);
     }
 
     if (order === "desc") {
-      const rows = stmtGetTransactionsDesc.all();
+      const rows = stmtGetTransactionsDesc.all(auth.user.id);
       return res.json(rows);
     }
 
-    const rows = stmtGetTransactionsAll.all();
+    const rows = stmtGetTransactionsAll.all(auth.user.id);
     return res.json(rows);
   });
 
   app.post("/api/transactions", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const ticker = normalizeTicker(req.body?.ticker);
     const type = String(req.body?.type || "")
       .trim()
@@ -530,11 +631,11 @@ async function startServer() {
     if (!Number.isFinite(price) || price <= 0) return badRequest(res, "Invalid price");
     if (!date) return badRequest(res, "Missing date");
 
-    const exists = stmtGetStockByTicker.get(ticker);
+    const exists = stmtGetStockByTicker.get(auth.user.id, ticker);
     if (!exists) return badRequest(res, "Ticker not found in portfolio. Add the stock first.");
 
     if (type === "SELL") {
-      const sums = stmtSumSharesByType.get(ticker) as { buyShares: number; sellShares: number };
+      const sums = stmtSumSharesByType.get(auth.user.id, ticker) as { buyShares: number; sellShares: number };
       const held = (sums?.buyShares || 0) - (sums?.sellShares || 0);
 
       if (shares > held + 1e-9) {
@@ -543,7 +644,7 @@ async function startServer() {
     }
 
     try {
-      const info = stmtInsertTransaction.run(ticker, type, shares, price, date);
+      const info = stmtInsertTransaction.run(auth.user.id, ticker, type, shares, price, date, nowIso());
       res.status(201).json({ success: true, id: info.lastInsertRowid });
     } catch {
       res.status(400).json({ error: "Invalid transaction data" });
@@ -551,10 +652,13 @@ async function startServer() {
   });
 
   app.delete("/api/transactions/:id", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const idNum = Number(req.params.id);
     if (!Number.isInteger(idNum)) return badRequest(res, "Invalid id");
 
-    stmtDeleteTransactionById.run(idNum);
+    stmtDeleteTransactionById.run(auth.user.id, idNum);
     res.status(204).send();
   });
 
@@ -562,26 +666,44 @@ async function startServer() {
   // API Routes (Import/Export)
   // -------------------------
   app.get("/api/export", (req, res) => {
-    const stocks = stmtGetStocks.all();
-    const transactions = stmtGetTransactionsDesc.all();
-    res.json({ stocks, transactions });
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
+    const stocks = stmtGetStocks.all(auth.user.id);
+    const transactions = stmtGetTransactionsDesc.all(auth.user.id);
+
+    res.json({
+      user: getSafeUser(auth.user),
+      stocks,
+      transactions,
+    });
   });
 
   app.post("/api/import", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
     const stocks = Array.isArray(req.body?.stocks) ? req.body.stocks : [];
     const transactions = Array.isArray(req.body?.transactions) ? req.body.transactions : [];
 
     try {
-      const insertStock = db.prepare("INSERT OR IGNORE INTO stocks (ticker, name) VALUES (?, ?)");
-      const insertTrans = db.prepare(
-        "INSERT INTO transactions (ticker, type, shares, price, date) VALUES (?, ?, ?, ?, ?)"
-      );
+      const insertStock = db.prepare(`
+        INSERT OR IGNORE INTO stocks (user_id, ticker, name, created_at)
+        VALUES (?, ?, ?, ?)
+      `);
+
+      const insertTrans = db.prepare(`
+        INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
 
       const tx = db.transaction(() => {
         for (const s of stocks) {
           const t = normalizeTicker(s?.ticker);
           const n = String(s?.name || "").trim();
-          if (t && n) insertStock.run(t, n);
+          if (t && n) {
+            insertStock.run(auth.user.id, t, n, String(s?.created_at || nowIso()));
+          }
         }
 
         for (const tr of transactions) {
@@ -605,7 +727,15 @@ async function startServer() {
             continue;
           }
 
-          insertTrans.run(t, ty, sh, pr, dt);
+          insertTrans.run(
+            auth.user.id,
+            t,
+            ty,
+            sh,
+            pr,
+            dt,
+            String(tr?.created_at || nowIso())
+          );
         }
       });
 
@@ -621,12 +751,19 @@ async function startServer() {
   // -------------------------
   app.get("/api/search", async (req, res) => {
     try {
+      const auth = requireAuth(req, res);
+      if (!auth) return;
+
       const qRaw = (req.query.q ?? req.query.ticker ?? req.query.symbol) as unknown;
       const q = String(qRaw || "").trim();
 
       if (!q) return badRequest(res, "Missing query (q/ticker/symbol)");
 
-      const key = requireEnv("FINNHUB_KEY");
+      const key = getFinnhubKeyForUser(auth.user);
+      if (!key) {
+        return res.status(400).json({ error: "Missing Finnhub API key" });
+      }
+
       const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${encodeURIComponent(key)}`;
       const data = await finnhubFetchJson(url);
 
@@ -638,7 +775,15 @@ async function startServer() {
 
   app.get("/api/quote", async (req, res) => {
     try {
-      const { symbol, raw, cacheHit, ttlMs } = await getQuoteCached(req.query.symbol ?? req.query.ticker);
+      const auth = requireAuth(req, res);
+      if (!auth) return;
+
+      const key = getFinnhubKeyForUser(auth.user);
+      if (!key) {
+        return res.status(400).json({ error: "Missing Finnhub API key" });
+      }
+
+      const { symbol, raw, cacheHit, ttlMs } = await getQuoteCached(req.query.symbol ?? req.query.ticker, key);
 
       res.setHeader("X-Cache", cacheHit ? "HIT" : "MISS");
       res.setHeader("X-Cache-TTL-MS", String(ttlMs));
@@ -661,6 +806,14 @@ async function startServer() {
 
   app.get("/api/prices", async (req, res) => {
     try {
+      const auth = requireAuth(req, res);
+      if (!auth) return;
+
+      const key = getFinnhubKeyForUser(auth.user);
+      if (!key) {
+        return res.status(400).json({ error: "Missing Finnhub API key" });
+      }
+
       const symbolsParam = String(req.query.symbols || "").trim();
       if (!symbolsParam) return badRequest(res, "Missing symbols (comma-separated)");
 
@@ -675,7 +828,7 @@ async function startServer() {
 
       await Promise.all(
         symbols.map(async (sym) => {
-          const { symbol, raw } = await getQuoteCached(sym);
+          const { symbol, raw } = await getQuoteCached(sym, key);
 
           results[symbol] = {
             symbol,
