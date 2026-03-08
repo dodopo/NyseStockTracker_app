@@ -548,6 +548,37 @@ async function startServer() {
   });
 
   // -------------------------
+  // Save Finnhub API key
+  // -------------------------
+  app.post("/api/auth/finnhub-key", (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+
+    const apiKey = String(req.body?.apiKey || "").trim();
+
+    if (!apiKey) {
+      return res.status(400).json({ error: "Missing API key" });
+    }
+
+    try {
+      db.prepare(`
+        UPDATE users
+        SET finnhub_key = ?, updated_at = ?
+        WHERE id = ?
+      `).run(apiKey, nowIso(), auth.user.id);
+
+      const updatedUser = stmtGetUserById.get(auth.user.id);
+
+      res.json({
+        success: true,
+        user: getSafeUser(updatedUser),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to save API key" });
+    }
+  });
+
+  // -------------------------
   // API Routes (Portfolio CRUD)
   // -------------------------
   app.get("/api/stocks", (req, res) => {
