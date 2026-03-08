@@ -13,6 +13,12 @@ import {
   LogOut,
   KeyRound,
   ExternalLink,
+  Upload,
+  Download,
+  Settings,
+  X,
+  Mail,
+  Lock,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format } from "date-fns";
@@ -29,6 +35,49 @@ type AuthUser = {
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
+};
+
+type BackupFileData = {
+  app?: string;
+  version?: number;
+  exportedAt?: string;
+  user?: {
+    id?: number;
+    email?: string;
+    display_name?: string | null;
+    finnhub_key?: string | null;
+    created_at?: string;
+    updated_at?: string;
+    last_login_at?: string | null;
+  };
+  settings?: {
+    id?: number;
+    user_id?: number;
+    default_port?: number;
+    theme?: string;
+    currency?: string;
+    include_secrets_in_backup?: number;
+    created_at?: string;
+    updated_at?: string;
+  };
+  stocks?: Array<{
+    id?: number;
+    user_id?: number;
+    ticker?: string;
+    name?: string;
+    created_at?: string;
+  }>;
+  transactions?: Array<{
+    id?: number;
+    user_id?: number;
+    ticker?: string;
+    type?: string;
+    shares?: number;
+    price?: number;
+    date?: string;
+    created_at?: string;
+    sort_order?: number;
+  }>;
 };
 
 // -----------------------------
@@ -92,6 +141,11 @@ function calculatePMPosition(transactions: Transaction[], currentPrice: number) 
   const txs = [...transactions].sort((a, b) => {
     const d = a.date.localeCompare(b.date);
     if (d !== 0) return d;
+
+    const aSort = a.sort_order ?? a.id ?? 0;
+    const bSort = b.sort_order ?? b.id ?? 0;
+    if (aSort !== bSort) return aSort - bSort;
+
     return (a.id || 0) - (b.id || 0);
   });
 
@@ -110,6 +164,7 @@ function calculatePMPosition(transactions: Transaction[], currentPrice: number) 
       if (qty > shares) {
         continue;
       }
+
       const avgCost = shares > 0 ? openCost / shares : 0;
       realizedPnL += (px - avgCost) * qty;
 
@@ -154,11 +209,13 @@ export default function App() {
 
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
 
-  // Ações - manter seleção no nível do App
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
-
-  // Consolidado view toggle
   const [mode, setMode] = useState<ConsolidationMode>("SEPARATED");
+
+  const [backupFileName, setBackupFileName] = useState("");
+  const [backupPreview, setBackupPreview] = useState<BackupFileData | null>(null);
+  const [restoringBackup, setRestoringBackup] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const loadPrices = async (tickers: string[]) => {
     if (!tickers.length) return;
@@ -220,7 +277,6 @@ export default function App() {
     bootstrapAuth();
   }, []);
 
-  // Mantém a seleção válida mesmo quando a lista de ações muda
   useEffect(() => {
     if (!selectedStock && stocks[0]?.ticker) {
       setSelectedStock(stocks[0].ticker);
@@ -278,6 +334,9 @@ export default function App() {
       setTransactions([]);
       setPrices({});
       setSelectedStock(null);
+      setBackupFileName("");
+      setBackupPreview(null);
+      setSettingsOpen(false);
       setLoading(false);
     }
   };
@@ -379,9 +438,7 @@ export default function App() {
               </div>
             </div>
 
-            <h2 className="text-3xl font-bold mb-4">
-              Controle sua carteira com acesso por usuário
-            </h2>
+            <h2 className="text-3xl font-bold mb-4">Controle sua carteira com acesso por usuário</h2>
 
             <div className="space-y-3 text-tv-text/70 leading-relaxed">
               <p>Agora o app já está preparado para autenticação local com múltiplos usuários.</p>
@@ -440,9 +497,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
-                    Senha
-                  </label>
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">Senha</label>
                   <input
                     type="password"
                     className="tv-input w-full"
@@ -498,9 +553,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">
-                    Senha
-                  </label>
+                  <label className="text-[10px] uppercase text-tv-text/40 font-bold">Senha</label>
                   <input
                     type="password"
                     className="tv-input w-full"
@@ -548,6 +601,146 @@ export default function App() {
         </div>
       </div>
     );
+  };
+
+  // -----------------------------
+  // BACKUP EXPORT / IMPORT
+  // -----------------------------
+  function sanitizeFilePart(value: string) {
+    return value
+      .trim()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9_-]/g, "")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "") || "user";
+  }
+
+  async function handleExportBackup() {
+    try {
+      const res = await fetch("/api/export", {
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to export backup");
+        return;
+      }
+
+      const data = await res.json();
+
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+
+      const now = new Date();
+      const date = now.toISOString().slice(0, 10);
+      const time = now
+        .toTimeString()
+        .slice(0, 8)
+        .replace(/:/g, "-");
+
+      const displayPart = sanitizeFilePart(currentUser?.displayName || currentUser?.email || "user");
+
+      a.download = `nyse-tracker-backup_${displayPart}_${date}_${time}.json`;
+      a.click();
+
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Backup export failed");
+    }
+  }
+
+  const handleBackupFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+
+    if (!file) {
+      setBackupFileName("");
+      setBackupPreview(null);
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as BackupFileData;
+
+      const hasValidShape =
+        parsed &&
+        typeof parsed === "object" &&
+        Array.isArray(parsed.stocks) &&
+        Array.isArray(parsed.transactions);
+
+      if (!hasValidShape) {
+        alert("Arquivo de backup inválido.");
+        setBackupFileName("");
+        setBackupPreview(null);
+        return;
+      }
+
+      setBackupFileName(file.name);
+      setBackupPreview(parsed);
+    } catch (err) {
+      alert("Não foi possível ler o arquivo de backup.");
+      setBackupFileName("");
+      setBackupPreview(null);
+    }
+
+    e.target.value = "";
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!backupPreview) {
+      alert("Selecione um arquivo de backup primeiro.");
+      return;
+    }
+
+    const confirmed = confirm(
+      "Este restore substituirá completamente a carteira atual, as configurações e a Finnhub API key do usuário logado. Deseja continuar?"
+    );
+
+    if (!confirmed) return;
+
+    setRestoringBackup(true);
+
+    try {
+      const res = await fetch("/api/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(backupPreview),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        alert(data?.error || "Falha ao restaurar backup.");
+        return;
+      }
+
+      if (data?.user) {
+        setCurrentUser(data.user);
+      }
+
+      setStocks([]);
+      setTransactions([]);
+      setPrices({});
+      setSelectedStock(null);
+      setLoading(true);
+      setBackupFileName("");
+      setBackupPreview(null);
+      setSettingsOpen(false);
+
+      await fetchData();
+
+      alert("Backup restaurado com sucesso.");
+    } catch (err) {
+      alert("Falha ao restaurar backup.");
+    } finally {
+      setRestoringBackup(false);
+    }
   };
 
   // -----------------------------
@@ -685,6 +878,162 @@ export default function App() {
                 </div>
               )}
             </form>
+          </Card>
+        </div>
+      </div>
+    );
+  };
+
+  // -----------------------------
+  // SETTINGS MODAL
+  // -----------------------------
+  const SettingsModal = () => {
+    if (!settingsOpen) return null;
+
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div
+          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          onClick={() => setSettingsOpen(false)}
+        />
+
+        <div className="relative z-[101] w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+          <Card className="p-0 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+              <div>
+                <h2 className="text-xl font-bold">Settings</h2>
+                <p className="text-sm text-tv-text/50">
+                  Backup, restore e futuras configurações da conta
+                </p>
+              </div>
+
+              <button
+                onClick={() => setSettingsOpen(false)}
+                className="p-2 rounded hover:bg-white/5 transition-all text-tv-text/60"
+                title="Fechar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              <Card title="Backup">
+                <div className="space-y-3">
+                  <p className="text-sm text-tv-text/60">
+                    Baixe um arquivo JSON com configurações, Finnhub API key, ações e transações do
+                    usuário logado.
+                  </p>
+
+                  <button onClick={handleExportBackup} className="tv-btn flex items-center gap-2">
+                    <Download size={16} />
+                    Baixar Backup
+                  </button>
+                </div>
+              </Card>
+
+              <Card title="Restore">
+                <div className="space-y-4">
+                  <p className="text-sm text-tv-text/60">
+                    Restaure um backup existente. Esta ação substituirá completamente os dados atuais
+                    do usuário logado.
+                  </p>
+
+                  <label className="inline-flex items-center gap-2 px-3 py-2 rounded border border-white/10 text-sm text-tv-text/70 hover:bg-white/5 transition-all cursor-pointer">
+                    <Upload size={16} />
+                    Selecionar arquivo
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={handleBackupFileSelected}
+                    />
+                  </label>
+
+                  {backupFileName && (
+                    <div className="text-xs text-tv-text/50">
+                      Arquivo selecionado: <span className="text-tv-text">{backupFileName}</span>
+                    </div>
+                  )}
+
+                  {backupPreview && (
+                    <div className="rounded border border-yellow-500/30 bg-yellow-500/10 p-3 space-y-2 text-sm">
+                      <div className="font-semibold text-yellow-300">Preview do backup</div>
+                      <div className="text-tv-text/80">
+                        Usuário do backup:{" "}
+                        {backupPreview.user?.display_name || backupPreview.user?.email || "N/A"}
+                      </div>
+                      <div className="text-tv-text/80">
+                        Exportado em: {backupPreview.exportedAt || "N/A"}
+                      </div>
+                      <div className="text-tv-text/80">
+                        Ações: {backupPreview.stocks?.length || 0}
+                      </div>
+                      <div className="text-tv-text/80">
+                        Transações: {backupPreview.transactions?.length || 0}
+                      </div>
+                      <div className="text-tv-text/80">
+                        Finnhub key incluída: {backupPreview.user?.finnhub_key ? "Sim" : "Não"}
+                      </div>
+
+                      <div className="text-xs text-yellow-200 mt-2">
+                        Atenção: o restore substitui completamente a carteira e configurações atuais.
+                      </div>
+
+                      <button
+                        onClick={handleRestoreBackup}
+                        disabled={restoringBackup}
+                        className="tv-btn flex items-center gap-2 mt-2"
+                      >
+                        {restoringBackup ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Upload size={16} />
+                        )}
+                        Restaurar Backup
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              <Card title="Conta">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 px-3 py-3 rounded border border-white/10 text-sm text-tv-text/50 bg-white/5 cursor-not-allowed"
+                    disabled
+                    title="Será implementado em etapa futura"
+                  >
+                    <Lock size={16} />
+                    Trocar senha
+                  </button>
+
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 px-3 py-3 rounded border border-white/10 text-sm text-tv-text/50 bg-white/5 cursor-not-allowed"
+                    disabled
+                    title="Será implementado em etapa futura"
+                  >
+                    <Mail size={16} />
+                    Trocar e-mail
+                  </button>
+
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 px-3 py-3 rounded border border-white/10 text-sm text-tv-text/50 bg-white/5 cursor-not-allowed"
+                    disabled
+                    title="Será implementado em etapa futura"
+                  >
+                    <KeyRound size={16} />
+                    Trocar API key
+                  </button>
+                </div>
+
+                <div className="mt-3 text-xs text-tv-text/40">
+                  Esta área foi preparada para futuras configurações da conta.
+                </div>
+              </Card>
+            </div>
           </Card>
         </div>
       </div>
@@ -1043,6 +1392,11 @@ export default function App() {
                       .sort((a, b) => {
                         const d = b.date.localeCompare(a.date);
                         if (d !== 0) return d;
+
+                        const aSort = a.sort_order ?? a.id ?? 0;
+                        const bSort = b.sort_order ?? b.id ?? 0;
+                        if (aSort !== bSort) return bSort - aSort;
+
                         return (b.id || 0) - (a.id || 0);
                       })
                       .map((t) => (
@@ -1096,7 +1450,7 @@ export default function App() {
   };
 
   // -----------------------------
-  // CONSOLIDADO (with toggle)
+  // CONSOLIDADO
   // -----------------------------
   const consolidated: PortfolioItem[] = useMemo(() => {
     return stocks.map((s) => {
@@ -1319,6 +1673,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-tv-bg text-tv-text flex flex-col">
+      <SettingsModal />
+
       <header className="tv-card border-x-0 border-t-0 rounded-none px-6 py-4 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-tv-accent rounded flex items-center justify-center text-white">
@@ -1351,6 +1707,14 @@ export default function App() {
             title="Atualizar preços"
           >
             <RefreshCw size={20} />
+          </button>
+
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="p-2 rounded hover:bg-white/5 transition-all text-tv-text/60 hover:text-tv-accent"
+            title="Settings"
+          >
+            <Settings size={20} />
           </button>
 
           <button

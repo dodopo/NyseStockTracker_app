@@ -12,6 +12,7 @@ export interface Transaction {
   shares: number;
   price: number;
   date: string; // YYYY-MM-DD
+  sort_order?: number;
 }
 
 /**

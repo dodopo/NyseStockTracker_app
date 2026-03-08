@@ -105,9 +105,22 @@ function ensureUserScopedPortfolioTables() {
         price REAL NOT NULL,
         date TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id, ticker) REFERENCES stocks(user_id, ticker) ON DELETE CASCADE
       );
+    `);
+  }
+
+  if (transactionsExists && !tableHasColumn("transactions", "sort_order")) {
+    db.exec(`
+      ALTER TABLE transactions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+    `);
+
+    db.exec(`
+      UPDATE transactions
+      SET sort_order = id
+      WHERE sort_order IS NULL OR sort_order = 0;
     `);
   }
 }
@@ -134,35 +147,45 @@ const stmtDeleteStock = db.prepare(`
   WHERE user_id = ? AND ticker = ?
 `);
 
+const stmtDeleteAllStocksByUser = db.prepare(`
+  DELETE FROM stocks
+  WHERE user_id = ?
+`);
+
 const stmtDeleteTransactionsByTicker = db.prepare(`
   DELETE FROM transactions
   WHERE user_id = ? AND ticker = ?
 `);
 
+const stmtDeleteAllTransactionsByUser = db.prepare(`
+  DELETE FROM transactions
+  WHERE user_id = ?
+`);
+
 const stmtGetTransactionsAll = db.prepare(`
-  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  SELECT id, user_id, ticker, type, shares, price, date, created_at, sort_order
   FROM transactions
   WHERE user_id = ?
-  ORDER BY date ASC, id ASC
+  ORDER BY date ASC, sort_order ASC, id ASC
 `);
 
 const stmtGetTransactionsByTicker = db.prepare(`
-  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  SELECT id, user_id, ticker, type, shares, price, date, created_at, sort_order
   FROM transactions
   WHERE user_id = ? AND ticker = ?
-  ORDER BY date ASC, id ASC
+  ORDER BY date ASC, sort_order ASC, id ASC
 `);
 
 const stmtGetTransactionsDesc = db.prepare(`
-  SELECT id, user_id, ticker, type, shares, price, date, created_at
+  SELECT id, user_id, ticker, type, shares, price, date, created_at, sort_order
   FROM transactions
   WHERE user_id = ?
-  ORDER BY date DESC, id DESC
+  ORDER BY date DESC, sort_order DESC, id DESC
 `);
 
 const stmtInsertTransaction = db.prepare(`
-  INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at, sort_order)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const stmtDeleteTransactionById = db.prepare(`
@@ -174,6 +197,12 @@ const stmtGetStockByTicker = db.prepare(`
   SELECT id, user_id, ticker, name, created_at
   FROM stocks
   WHERE user_id = ? AND ticker = ?
+`);
+
+const stmtGetNextSortOrderForUser = db.prepare(`
+  SELECT COALESCE(MAX(sort_order), 0) + 1 AS nextSortOrder
+  FROM transactions
+  WHERE user_id = ?
 `);
 
 const stmtSumSharesByType = db.prepare(`
@@ -201,9 +230,32 @@ const stmtInsertUser = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
+const stmtUpdateUserProfileFromBackup = db.prepare(`
+  UPDATE users
+  SET display_name = ?, finnhub_key = ?, updated_at = ?
+  WHERE id = ?
+`);
+
 const stmtInsertUserSettings = db.prepare(`
   INSERT INTO user_settings (user_id, default_port, theme, currency, include_secrets_in_backup, created_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtGetUserSettingsByUserId = db.prepare(`
+  SELECT id, user_id, default_port, theme, currency, include_secrets_in_backup, created_at, updated_at
+  FROM user_settings
+  WHERE user_id = ?
+`);
+
+const stmtUpsertUserSettings = db.prepare(`
+  INSERT INTO user_settings (user_id, default_port, theme, currency, include_secrets_in_backup, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(user_id) DO UPDATE SET
+    default_port = excluded.default_port,
+    theme = excluded.theme,
+    currency = excluded.currency,
+    include_secrets_in_backup = excluded.include_secrets_in_backup,
+    updated_at = excluded.updated_at
 `);
 
 const stmtInsertSession = db.prepare(`
@@ -309,6 +361,19 @@ function getSafeUser(user: any) {
   };
 }
 
+function getBackupUser(user: any) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    display_name: user.display_name,
+    finnhub_key: user.finnhub_key,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+    last_login_at: user.last_login_at,
+  };
+}
+
 function getUserFromSession(req: express.Request) {
   const token = getSessionTokenFromReq(req);
   if (!token) return null;
@@ -404,7 +469,7 @@ async function getQuoteCached(symbolInput: unknown, apiKey: string) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "5mb" }));
 
   // -------------------------
   // API Routes (Auth)
@@ -445,15 +510,7 @@ async function startServer() {
 
         const userId = Number(userInfo.lastInsertRowid);
 
-        stmtInsertUserSettings.run(
-          userId,
-          PORT,
-          "dark",
-          "USD",
-          1,
-          timestamp,
-          timestamp
-        );
+        stmtInsertUserSettings.run(userId, PORT, "dark", "USD", 1, timestamp, timestamp);
 
         const sessionToken = uuidv4();
         stmtInsertSession.run(userId, sessionToken, timestamp, null);
@@ -675,7 +732,20 @@ async function startServer() {
     }
 
     try {
-      const info = stmtInsertTransaction.run(auth.user.id, ticker, type, shares, price, date, nowIso());
+      const row = stmtGetNextSortOrderForUser.get(auth.user.id) as { nextSortOrder: number };
+      const nextSortOrder = Number(row?.nextSortOrder || 1);
+
+      const info = stmtInsertTransaction.run(
+        auth.user.id,
+        ticker,
+        type,
+        shares,
+        price,
+        date,
+        nowIso(),
+        nextSortOrder
+      );
+
       res.status(201).json({ success: true, id: info.lastInsertRowid });
     } catch {
       res.status(400).json({ error: "Invalid transaction data" });
@@ -700,11 +770,29 @@ async function startServer() {
     const auth = requireAuth(req, res);
     if (!auth) return;
 
+    const settings = stmtGetUserSettingsByUserId.get(auth.user.id);
     const stocks = stmtGetStocks.all(auth.user.id);
     const transactions = stmtGetTransactionsDesc.all(auth.user.id);
+    const includeSecrets = Number(settings?.include_secrets_in_backup ?? 1) === 1;
+
+    const backupUser = includeSecrets
+      ? getBackupUser(auth.user)
+      : {
+          id: auth.user.id,
+          email: auth.user.email,
+          display_name: auth.user.display_name,
+          finnhub_key: null,
+          created_at: auth.user.created_at,
+          updated_at: auth.user.updated_at,
+          last_login_at: auth.user.last_login_at,
+        };
 
     res.json({
-      user: getSafeUser(auth.user),
+      app: "NYSE Stock Portfolio Tracker",
+      version: 1,
+      exportedAt: nowIso(),
+      user: backupUser,
+      settings,
       stocks,
       transactions,
     });
@@ -714,66 +802,129 @@ async function startServer() {
     const auth = requireAuth(req, res);
     if (!auth) return;
 
-    const stocks = Array.isArray(req.body?.stocks) ? req.body.stocks : [];
-    const transactions = Array.isArray(req.body?.transactions) ? req.body.transactions : [];
+    const backup = req.body || {};
+    const backupUser = backup?.user || {};
+    const backupSettings = backup?.settings || {};
+    const stocks = Array.isArray(backup?.stocks) ? backup.stocks : [];
+    const transactions = Array.isArray(backup?.transactions) ? backup.transactions : [];
+
+    const backupEmail = normalizeEmail(backupUser?.email);
+    const currentUserEmail = normalizeEmail(auth.user?.email);
+
+    if (!backupEmail) {
+      return res.status(400).json({ error: "Backup inválido: usuário do backup não informado" });
+    }
+
+    if (backupEmail !== currentUserEmail) {
+      return res.status(403).json({
+        error: "Este backup pertence a outro usuário e não pode ser restaurado nesta conta",
+      });
+    }
 
     try {
-      const insertStock = db.prepare(`
-        INSERT OR IGNORE INTO stocks (user_id, ticker, name, created_at)
-        VALUES (?, ?, ?, ?)
-      `);
+      const restoreTx = db.transaction(() => {
+        // Restore user-level editable fields only
+        const displayNameRaw = typeof backupUser?.display_name === "string" ? backupUser.display_name.trim() : "";
+        const finnhubKeyRaw = typeof backupUser?.finnhub_key === "string" ? backupUser.finnhub_key.trim() : "";
 
-      const insertTrans = db.prepare(`
-        INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
+        stmtUpdateUserProfileFromBackup.run(
+          displayNameRaw || null,
+          finnhubKeyRaw || null,
+          nowIso(),
+          auth.user.id
+        );
 
-      const tx = db.transaction(() => {
+        // Restore settings
+        const existingSettings = stmtGetUserSettingsByUserId.get(auth.user.id) as any;
+        const settingsCreatedAt = existingSettings?.created_at || nowIso();
+
+        stmtUpsertUserSettings.run(
+          auth.user.id,
+          Number.isFinite(Number(backupSettings?.default_port)) ? Number(backupSettings.default_port) : PORT,
+          typeof backupSettings?.theme === "string" && backupSettings.theme.trim()
+            ? backupSettings.theme.trim()
+            : "dark",
+          typeof backupSettings?.currency === "string" && backupSettings.currency.trim()
+            ? backupSettings.currency.trim()
+            : "USD",
+          Number(backupSettings?.include_secrets_in_backup ?? 1) === 1 ? 1 : 0,
+          settingsCreatedAt,
+          nowIso()
+        );
+
+        // Replace portfolio entirely
+        stmtDeleteAllTransactionsByUser.run(auth.user.id);
+        stmtDeleteAllStocksByUser.run(auth.user.id);
+
         for (const s of stocks) {
-          const t = normalizeTicker(s?.ticker);
-          const n = String(s?.name || "").trim();
-          if (t && n) {
-            insertStock.run(auth.user.id, t, n, String(s?.created_at || nowIso()));
-          }
+          const ticker = normalizeTicker(s?.ticker);
+          const name = String(s?.name || "").trim();
+          const createdAt = String(s?.created_at || nowIso()).trim();
+
+          if (!ticker || !name) continue;
+
+          stmtInsertStock.run(auth.user.id, ticker, name, createdAt || nowIso());
         }
 
+        let fallbackSortOrder = 1;
+
         for (const tr of transactions) {
-          const t = normalizeTicker(tr?.ticker);
-          const ty = String(tr?.type || "")
-            .trim()
-            .toUpperCase();
-          const sh = Number(tr?.shares);
-          const pr = Number(tr?.price);
-          const dt = String(tr?.date || "").trim();
+          const ticker = normalizeTicker(tr?.ticker);
+          const type = String(tr?.type || "").trim().toUpperCase();
+          const shares = Number(tr?.shares);
+          const price = Number(tr?.price);
+          const date = String(tr?.date || "").trim();
+          const createdAt = String(tr?.created_at || nowIso()).trim();
+          const sortOrderRaw = Number(tr?.sort_order);
+          const sortOrder =
+            Number.isFinite(sortOrderRaw) && sortOrderRaw > 0 ? sortOrderRaw : fallbackSortOrder;
 
           if (
-            !t ||
-            (ty !== "BUY" && ty !== "SELL") ||
-            !Number.isFinite(sh) ||
-            sh <= 0 ||
-            !Number.isFinite(pr) ||
-            pr <= 0 ||
-            !dt
+            !ticker ||
+            (type !== "BUY" && type !== "SELL") ||
+            !Number.isFinite(shares) ||
+            shares <= 0 ||
+            !Number.isFinite(price) ||
+            price <= 0 ||
+            !date
           ) {
             continue;
           }
 
-          insertTrans.run(
+          const exists = stmtGetStockByTicker.get(auth.user.id, ticker);
+          if (!exists) continue;
+
+          stmtInsertTransaction.run(
             auth.user.id,
-            t,
-            ty,
-            sh,
-            pr,
-            dt,
-            String(tr?.created_at || nowIso())
+            ticker,
+            type,
+            shares,
+            price,
+            date,
+            createdAt || nowIso(),
+            sortOrder
           );
+
+          fallbackSortOrder += 1;
         }
       });
 
-      tx();
-      res.json({ success: true });
-    } catch {
-      res.status(400).json({ error: "Failed to import data" });
+      restoreTx();
+
+      const updatedUser = stmtGetUserById.get(auth.user.id);
+      const updatedSettings = stmtGetUserSettingsByUserId.get(auth.user.id);
+      const updatedStocks = stmtGetStocks.all(auth.user.id);
+      const updatedTransactions = stmtGetTransactionsDesc.all(auth.user.id);
+
+      res.json({
+        success: true,
+        user: getSafeUser(updatedUser),
+        settings: updatedSettings,
+        stocks: updatedStocks,
+        transactions: updatedTransactions,
+      });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || "Failed to import data" });
     }
   });
 
