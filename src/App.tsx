@@ -25,6 +25,7 @@ import { format } from "date-fns";
 import { cn, formatCurrency, formatPercent } from "./lib/utils";
 import type { Stock, Transaction, TransactionType, PortfolioItem, ConsolidationMode } from "./types";
 import { fetchQuotes, pricesToMap, searchStock, StockPrice } from "./services/marketService";
+const APP_VERSION = "0.2.0";
 
 type AuthUser = {
   id: number;
@@ -1758,7 +1759,7 @@ export default function App() {
       </main>
 
       <footer className="p-6 text-center text-[10px] text-tv-text/20 uppercase tracking-widest font-bold">
-        NYSE Portfolio Tracker &copy; {new Date().getFullYear()}
+         NYSE Portfolio Tracker &copy; {new Date().getFullYear()} — v{APP_VERSION}
       </footer>
     </div>
   );
