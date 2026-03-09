@@ -25,7 +25,9 @@ import { format } from "date-fns";
 import { cn, formatCurrency, formatPercent } from "./lib/utils";
 import type { Stock, Transaction, TransactionType, PortfolioItem, ConsolidationMode } from "./types";
 import { fetchQuotes, pricesToMap, searchStock, StockPrice } from "./services/marketService";
-const APP_VERSION = "0.2.0";
+
+declare const __APP_VERSION__: string;
+const APP_VERSION = __APP_VERSION__;
 
 type AuthUser = {
   id: number;
