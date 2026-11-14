@@ -16,6 +16,29 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.8.0] - 2026-11-14
+
+Multi-asset: your own tabs and a crypto asset type. Database migration v5 is **additive** (a new `tabs` table and two new columns in `stocks`); existing assets go to a default tab "Ações" automatically.
+
+### Added
+- **Tabs you define**: Settings → Abas to create, rename, recolor, reorder and delete tabs. Each tab holds one asset type; you can have several tabs of the same type (e.g. "Cripto" and "Longo prazo"). The **"+"** in the tab bar opens this screen. A tab with assets can only be deleted after choosing another tab of the same type to receive them (trades are kept); the last tab cannot be deleted.
+- **Crypto asset type**: search by name or symbol (Massive reference data, US dollar pairs only), live price from Finnhub (Binance USDT pair) with Massive's previous close as fallback, quantities with up to 8 decimals, chart and statistics from Massive daily history. Crypto charts have no market session: 1D shows the last 24 hours and the "Estendido" toggle is only shown for stocks.
+- **Consolidated view grouped by tab**, with a subtotal (value and P/L) per tab. Clicking a row opens the asset in its tab.
+- Addresses per tab: `#/aba/3/X%3ABTCUSD`. Old links (`#/acoes/AAPL`) still work and open the asset in its tab.
+- `GET/POST /api/tabs`, `PATCH /api/tabs/:id`, `POST /api/tabs/reorder`, `DELETE /api/tabs/:id?moveTo=`; `POST /api/stocks` now requires `tabId` (the asset type must match the tab); `GET /api/search?type=crypto`.
+- Backups include the tabs; older backups (without tabs) still restore, into default tabs.
+- `shared/assetTypes.ts`: asset types are defined in code (labels, search, quote and chart rules), tabs are data. Adding a new type later does not change the tabs.
+- Tests: 78 (13 new for tabs, crypto, migration v5 and backups).
+
+### Changed
+- Crypto assets are stored in the Massive format (`X:BTCUSD`) and shown as `BTC`.
+- On phones the tab bar scrolls sideways and keeps the open tab in view.
+
+### Notes
+- **Rollback to v0.7.x**: the code runs on the migrated database, but v0.7.x does not accept crypto tickers and its price lookup fails for the whole portfolio while a crypto asset exists. Before rolling back, delete the crypto assets or restore the backup made before the update.
+- Crypto search, charts and statistics need the Massive key (Settings → Conta → "Chave dos gráficos"); without it, the crypto search shows a link to Settings.
+
+
 ## [0.7.1] - 2026-11-14
 
 Chart fixes found while validating v0.7.0 with real Massive data. No database migration.

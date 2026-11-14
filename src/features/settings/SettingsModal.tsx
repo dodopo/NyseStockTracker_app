@@ -13,6 +13,8 @@ import {
 import { LIMITS, normalizeEmail } from "../../../shared/validation";
 import { Card, ErrorMessage, FieldLabel, PasswordInput } from "../../components/ui";
 import type { AuthUser, BackupFileData } from "../../types";
+import type { PortfolioState } from "../../hooks/usePortfolio";
+import { TabsCard } from "./TabsCard";
 
 function sanitizeFilePart(value: string) {
   return (
@@ -38,6 +40,7 @@ function downloadJson(data: unknown, fileName: string) {
 export function SettingsModal({
   open,
   user,
+  portfolio,
   onClose,
   onRestored,
   onUserChanged,
@@ -45,6 +48,7 @@ export function SettingsModal({
 }: {
   open: boolean;
   user: AuthUser;
+  portfolio: PortfolioState;
   onClose: () => void;
   onRestored: (user: AuthUser) => Promise<void>;
   /** The account data changed (e-mail, Finnhub key): refresh the session user. */
@@ -75,7 +79,7 @@ export function SettingsModal({
           <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <div>
               <h2 className="text-xl font-bold">Settings</h2>
-              <p className="text-sm text-tv-text/50">Backup, restore e configurações da conta</p>
+              <p className="text-sm text-tv-text/50">Abas, conta, backup e restore</p>
             </div>
             <button
               type="button"
@@ -89,6 +93,7 @@ export function SettingsModal({
           </div>
 
           <div className="p-6 space-y-6">
+            <TabsCard portfolio={portfolio} />
             <AccountCard user={user} onUserChanged={onUserChanged} onSignedOut={onSignedOut} />
             <BackupCard user={user} />
             <RestoreCard user={user} onRestored={onRestored} onClose={onClose} />

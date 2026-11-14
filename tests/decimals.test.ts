@@ -109,7 +109,8 @@ describe("migração v3 e compatibilidade de rollback", () => {
       password: "correct-horse-battery",
       confirmPassword: "correct-horse-battery",
     });
-    await agent.post("/api/stocks").send({ ticker: "BTC", name: "Bitcoin" });
+    const tabId = (await agent.get("/api/tabs")).body[0].id; // default "Ações" tab
+    await agent.post("/api/stocks").send({ ticker: "BTC", name: "Grayscale Bitcoin Mini Trust", tabId });
     const res = await agent
       .post("/api/transactions")
       .send({ ticker: "BTC", type: "BUY", shares: "0.00000001", price: "65721.55", date: "2026-11-14" });

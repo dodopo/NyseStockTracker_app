@@ -1,6 +1,20 @@
+import type { AssetType } from "../shared/assetTypes";
+
 export interface Stock {
   ticker: string;
   name: string;
+  /** Present on assets loaded from the server (v0.8.0+). */
+  asset_type?: AssetType;
+  tab_id?: number | null;
+}
+
+export interface Tab {
+  id: number;
+  name: string;
+  assetType: AssetType;
+  color: string;
+  sortOrder: number;
+  assetCount: number;
 }
 
 export type TransactionType = "BUY" | "SELL";
@@ -33,6 +47,7 @@ export type AuthUser = {
 export interface PortfolioItem {
   ticker: string;
   name: string;
+  tabId: number | null;
   quantity: string;
   shares: number;
   avgCost: number;

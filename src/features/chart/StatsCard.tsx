@@ -4,6 +4,7 @@ import { marketApi } from "../../api/endpoints";
 import { Card } from "../../components/ui";
 import { formatPrice } from "../../lib/utils";
 import type { StockStats } from "../../types";
+import type { AssetType } from "../../../shared/assetTypes";
 
 const compact = (value: number) =>
   new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 2 }).format(value);
@@ -15,7 +16,16 @@ function formatDate(value: string | null) {
 }
 
 /** Key statistics (Finnhub): 52-week range, average volume, market cap, beta. */
-export function StatsCard({ symbol, currentPrice }: { symbol: string; currentPrice: number }) {
+export function StatsCard({
+  symbol,
+  currentPrice,
+  assetType,
+}: {
+  symbol: string;
+  currentPrice: number;
+  assetType: AssetType;
+}) {
+  const crypto = assetType === "crypto";
   const [stats, setStats] = useState<StockStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,12 +47,17 @@ export function StatsCard({ symbol, currentPrice }: { symbol: string; currentPri
       ? Math.min(100, Math.max(0, ((currentPrice - stats.low52w) / (stats.high52w - stats.low52w)) * 100))
       : null;
 
+  const unit = crypto ? "unidades" : "ações";
   const rows: Array<[string, string]> = stats
     ? [
-        ["Volume médio (10 dias)", stats.avgVolume10d != null ? `${compact(stats.avgVolume10d * 1e6)} ações` : "—"],
-        ["Volume médio (3 meses)", stats.avgVolume3m != null ? `${compact(stats.avgVolume3m * 1e6)} ações` : "—"],
-        ["Valor de mercado", stats.marketCap != null ? `US$ ${compact(stats.marketCap * 1e6)}` : "—"],
-        ["Beta", stats.beta != null ? stats.beta.toFixed(2) : "—"],
+        ["Volume médio (10 dias)", stats.avgVolume10d != null ? `${compact(stats.avgVolume10d * 1e6)} ${unit}` : "—"],
+        [crypto ? "Volume médio (90 dias)" : "Volume médio (3 meses)", stats.avgVolume3m != null ? `${compact(stats.avgVolume3m * 1e6)} ${unit}` : "—"],
+        ...(crypto
+          ? []
+          : ([
+              ["Valor de mercado", stats.marketCap != null ? `US$ ${compact(stats.marketCap * 1e6)}` : "—"],
+              ["Beta", stats.beta != null ? stats.beta.toFixed(2) : "—"],
+            ] as Array<[string, string]>)),
       ]
     : [];
 
@@ -80,7 +95,9 @@ export function StatsCard({ symbol, currentPrice }: { symbol: string; currentPri
               </div>
             ))}
           </dl>
-          <p className="text-[10px] text-tv-text/40">Fonte: Finnhub.</p>
+          <p className="text-[10px] text-tv-text/40">
+            {crypto ? "Fonte: histórico diário da Massive (com atraso)." : "Fonte: Finnhub."}
+          </p>
         </div>
       )}
     </Card>

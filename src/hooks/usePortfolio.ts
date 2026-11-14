@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { portfolioApi } from "../api/endpoints";
+import { portfolioApi, tabsApi } from "../api/endpoints";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
-import type { Stock, Transaction } from "../types";
+import type { Stock, Tab, Transaction } from "../types";
+import type { AssetType } from "../../shared/assetTypes";
 
 /**
  * Portfolio data of the logged-in user: assets, transactions and quotes.
  * `userKey` is the user id when the portfolio can be loaded, or null.
  */
 export function usePortfolio(userKey: number | null) {
+  const [tabs, setTabs] = useState<Tab[]>([]);
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [prices, setPrices] = useState<Record<string, StockPrice>>({});
@@ -27,10 +29,12 @@ export function usePortfolio(userKey: number | null) {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextStocks, nextTransactions] = await Promise.all([
+      const [nextTabs, nextStocks, nextTransactions] = await Promise.all([
+        tabsApi.list(),
         portfolioApi.stocks(),
         portfolioApi.transactions(),
       ]);
+      setTabs(nextTabs);
       setStocks(nextStocks);
       setTransactions(nextTransactions);
       await loadPrices(nextStocks.map((s) => s.ticker));
@@ -48,6 +52,7 @@ export function usePortfolio(userKey: number | null) {
   useEffect(() => {
     setLoadedKey(null);
     if (userKey === null) {
+      setTabs([]);
       setStocks([]);
       setTransactions([]);
       setPrices({});
@@ -72,15 +77,42 @@ export function usePortfolio(userKey: number | null) {
     }
   }, [stocks, loadPrices]);
 
+  const reloadTabs = useCallback(async () => {
+    setTabs(await tabsApi.list());
+  }, []);
+
   const addStock = useCallback(
-    async (stock: Stock) => {
+    async (stock: { ticker: string; name: string; tabId: number }) => {
       await portfolioApi.addStock(stock);
-      const nextStocks = await portfolioApi.stocks();
+      const [nextStocks, nextTabs] = await Promise.all([portfolioApi.stocks(), tabsApi.list()]);
       setStocks(nextStocks);
+      setTabs(nextTabs);
       await loadPrices(nextStocks.map((s) => s.ticker));
     },
     [loadPrices]
   );
+
+  const addTab = useCallback(async (tab: { name: string; assetType: AssetType; color: string }) => {
+    const created = await tabsApi.create(tab);
+    await reloadTabs();
+    return created;
+  }, [reloadTabs]);
+
+  const updateTab = useCallback(async (id: number, changes: { name?: string; color?: string }) => {
+    await tabsApi.update(id, changes);
+    await reloadTabs();
+  }, [reloadTabs]);
+
+  const reorderTabs = useCallback(async (ids: number[]) => {
+    setTabs(await tabsApi.reorder(ids));
+  }, []);
+
+  const deleteTab = useCallback(async (id: number, moveTo?: number) => {
+    await tabsApi.remove(id, moveTo);
+    const [nextTabs, nextStocks] = await Promise.all([tabsApi.list(), portfolioApi.stocks()]);
+    setTabs(nextTabs);
+    setStocks(nextStocks);
+  }, []);
 
   const deleteStock = useCallback(async (ticker: string) => {
     await portfolioApi.deleteStock(ticker);
@@ -90,11 +122,12 @@ export function usePortfolio(userKey: number | null) {
     ]);
     setStocks(nextStocks);
     setTransactions(nextTransactions);
+    void reloadTabs();
     setPrices((current) => {
       const { [ticker]: _removed, ...rest } = current;
       return rest;
     });
-  }, []);
+  }, [reloadTabs]);
 
   const addTransaction = useCallback(
     async (tx: Omit<Transaction, "id" | "sort_order">) => {
@@ -114,6 +147,7 @@ export function usePortfolio(userKey: number | null) {
 
   return {
     ready: userKey !== null && loadedKey === userKey,
+    tabs,
     stocks,
     transactions,
     prices,
@@ -123,6 +157,10 @@ export function usePortfolio(userKey: number | null) {
     refreshPrices,
     addStock,
     deleteStock,
+    addTab,
+    updateTab,
+    reorderTabs,
+    deleteTab,
     addTransaction,
     deleteTransaction,
   };

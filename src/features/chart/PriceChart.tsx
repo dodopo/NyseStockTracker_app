@@ -26,6 +26,7 @@ import { cn, formatPercent, formatPrice, formatQuantity } from "../../lib/utils"
 import type { Candle, Transaction } from "../../types";
 import { CHART_INTERVALS, CHART_RANGES, isIntraday, type ChartRangeId } from "../../../shared/chartRanges";
 import { filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
+import { ASSET_TYPES, type AssetType } from "../../../shared/assetTypes";
 
 const COLORS = {
   bg: "#1e222d",
@@ -59,12 +60,14 @@ type LoadState =
 
 export function PriceChart({
   symbol,
+  assetType,
   transactions,
   avgCost,
   hasPosition,
   onOpenSettings,
 }: {
   symbol: string;
+  assetType: AssetType;
   transactions: Transaction[];
   avgCost: number;
   hasPosition: boolean;
@@ -187,10 +190,13 @@ export function PriceChart({
 
   const activeInterval = state.status === "ready" ? state.interval : CHART_RANGES[range].auto;
   const intraday = isIntraday(activeInterval);
+  // US stocks have a regular session; crypto trades 24/7.
+  const hasSession = ASSET_TYPES[assetType].hours === "regular";
+  const sessionFilter = intraday && hasSession && !extended;
   const candles = useMemo(() => {
     const all = state.status === "ready" ? state.candles : [];
-    return intraday && !extended ? filterRegularSession(all, activeInterval) : all;
-  }, [state, intraday, extended, activeInterval]);
+    return sessionFilter ? filterRegularSession(all, activeInterval) : all;
+  }, [state, sessionFilter, activeInterval]);
 
   // Trades grouped by candle: one arrow per candle and type; details go to the legend.
   const tradesByCandle = useMemo(() => groupTradesByCandle(candles, transactions as ChartTrade[]), [candles, transactions]);
@@ -270,6 +276,7 @@ export function PriceChart({
   const candleChange = shown && prevClose ? { abs: shown.c - prevClose, pct: ((shown.c - prevClose) / prevClose) * 100 } : null;
 
   const rangeConfig = CHART_RANGES[range];
+  const rangeTitle = (id: ChartRangeId) => (id === "1D" && !hasSession ? "Últimas 24 h" : CHART_RANGES[id].title);
 
   const content = (
     <div
@@ -285,7 +292,7 @@ export function PriceChart({
               <button
                 key={id}
                 type="button"
-                title={CHART_RANGES[id].title}
+                title={rangeTitle(id)}
                 aria-pressed={range === id}
                 onClick={() => {
                   setRange(id);
@@ -318,7 +325,7 @@ export function PriceChart({
                 </option>
               ))}
             </select>
-            {intraday && (
+            {intraday && hasSession && (
               <button
                 type="button"
                 aria-pressed={extended}
@@ -378,8 +385,8 @@ export function PriceChart({
               title="Variação entre a abertura da primeira vela e o fechamento da última"
             >
               {periodChange.abs >= 0 ? "+" : ""}
-              {periodChange.abs.toFixed(2)} ({formatPercent(periodChange.pct)}) · {rangeConfig.title.toLowerCase()}
-              {intraday && !extended ? " · pregão regular" : ""}
+              {periodChange.abs.toFixed(2)} ({formatPercent(periodChange.pct)}) · {rangeTitle(range).toLowerCase()}
+              {sessionFilter ? " · pregão regular" : ""}
             </span>
           )}
         </div>

@@ -146,7 +146,91 @@ const MIGRATIONS: Array<{ version: number; up: (db: DB) => void }> = [
       }
     },
   },
+  {
+    // v5 = v0.8.0 multi-asset: user-defined tabs, each bound to an asset type. Additive:
+    // existing assets go to an automatic "Ações" tab (see ensureDefaultTabs).
+    version: 5,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tabs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          asset_type TEXT NOT NULL CHECK(asset_type IN ('us_stock', 'crypto')),
+          color TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_tabs_user ON tabs(user_id, sort_order);
+      `);
+      if (!tableHasColumn(db, "stocks", "asset_type")) {
+        db.exec(`ALTER TABLE stocks ADD COLUMN asset_type TEXT NOT NULL DEFAULT 'us_stock';`);
+      }
+      if (!tableHasColumn(db, "stocks", "tab_id")) {
+        db.exec(`ALTER TABLE stocks ADD COLUMN tab_id INTEGER REFERENCES tabs(id) ON DELETE SET NULL;`);
+      }
+    },
+  },
 ];
+
+export const DEFAULT_TAB = { name: "Ações", assetType: "us_stock", color: "#2962ff" } as const;
+
+/**
+ * Every asset must belong to a tab. Assets without one (migrated from v0.7.x, or
+ * written by an older version after a rollback) go to the user's first tab of the
+ * right type, which is created if missing. Idempotent; runs at every start.
+ */
+export function ensureDefaultTabs(db: DB) {
+  if (!tableExists(db, "tabs") || !tableHasColumn(db, "stocks", "tab_id")) return 0;
+
+  // Older versions only write US stocks; make the type match the ticker format.
+  db.exec(`UPDATE stocks SET asset_type = 'crypto' WHERE ticker LIKE 'X:%' AND asset_type != 'crypto';`);
+
+  const orphans = db
+    .prepare(`SELECT DISTINCT user_id, asset_type FROM stocks WHERE tab_id IS NULL`)
+    .all() as Array<{ user_id: number; asset_type: string }>;
+  const usersWithoutTabs = db
+    .prepare(`SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM tabs)`)
+    .all() as Array<{ id: number }>;
+  if (!orphans.length && !usersWithoutTabs.length) return 0;
+
+  const findTab = db.prepare(`SELECT id FROM tabs WHERE user_id = ? AND asset_type = ? ORDER BY sort_order, id LIMIT 1`);
+  const nextOrder = db.prepare(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM tabs WHERE user_id = ?`);
+  const insertTab = db.prepare(
+    `INSERT INTO tabs (user_id, name, asset_type, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  const assign = db.prepare(`UPDATE stocks SET tab_id = ? WHERE user_id = ? AND asset_type = ? AND tab_id IS NULL`);
+
+  const tabFor = (userId: number, assetType: string) => {
+    const found = findTab.get(userId, assetType) as { id: number } | undefined;
+    if (found) return found.id;
+    const isCrypto = assetType === "crypto";
+    const order = (nextOrder.get(userId) as { n: number }).n;
+    return Number(
+      insertTab.run(
+        userId,
+        isCrypto ? "Cripto" : DEFAULT_TAB.name,
+        assetType,
+        isCrypto ? "#f7931a" : DEFAULT_TAB.color,
+        order,
+        new Date().toISOString()
+      ).lastInsertRowid
+    );
+  };
+
+  let changed = 0;
+  db.transaction(() => {
+    for (const u of usersWithoutTabs) {
+      tabFor(u.id, DEFAULT_TAB.assetType);
+      changed++;
+    }
+    for (const o of orphans) {
+      changed += assign.run(tabFor(o.user_id, o.asset_type), o.user_id, o.asset_type).changes;
+    }
+  })();
+  return changed;
+}
 
 /**
  * Fills shares_dec/price_dec for rows that do not have them yet: rows migrated
@@ -186,6 +270,7 @@ export function migrate(db: DB) {
   }
 
   backfillDecimalColumns(db);
+  ensureDefaultTabs(db);
 }
 
 /**

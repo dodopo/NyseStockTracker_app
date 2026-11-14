@@ -6,7 +6,8 @@ import { rateLimit } from "express-rate-limit";
 import type { z } from "zod";
 import type { AppConfig } from "./config";
 import { CandleError, createCandleService, defaultMassiveFetch, type MassiveFetch } from "./candles";
-import type { DB } from "./db";
+import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
+import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
 import {
   changeEmailSchema,
@@ -18,6 +19,9 @@ import {
   massiveKeySchema,
   registerSchema,
   stockSchema,
+  tabCreateSchema,
+  tabReorderSchema,
+  tabUpdateSchema,
   transactionSchema,
 } from "../shared/schemas";
 import {
@@ -141,10 +145,30 @@ export function createApp(
   // ---------------------------------------------------------------------------
   const q = {
     getStocks: db.prepare(
-      `SELECT id, ticker, name, created_at FROM stocks WHERE user_id = ? ORDER BY ticker ASC`
+      `SELECT id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? ORDER BY ticker ASC`
     ),
     getStock: db.prepare(`SELECT id FROM stocks WHERE user_id = ? AND ticker = ?`),
-    insertStock: db.prepare(`INSERT INTO stocks (user_id, ticker, name, created_at) VALUES (?, ?, ?, ?)`),
+    insertStock: db.prepare(
+      `INSERT INTO stocks (user_id, ticker, name, created_at, asset_type, tab_id) VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+
+    getTabs: db.prepare(
+      `SELECT t.id, t.name, t.asset_type, t.color, t.sort_order,
+              (SELECT COUNT(*) FROM stocks s WHERE s.tab_id = t.id) AS asset_count
+       FROM tabs t WHERE t.user_id = ? ORDER BY t.sort_order ASC, t.id ASC`
+    ),
+    getTab: db.prepare(`SELECT id, name, asset_type, color, sort_order FROM tabs WHERE user_id = ? AND id = ?`),
+    insertTab: db.prepare(
+      `INSERT INTO tabs (user_id, name, asset_type, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+    nextTabOrder: db.prepare(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM tabs WHERE user_id = ?`),
+    updateTab: db.prepare(`UPDATE tabs SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE user_id = ? AND id = ?`),
+    setTabOrder: db.prepare(`UPDATE tabs SET sort_order = ? WHERE user_id = ? AND id = ?`),
+    countTabs: db.prepare(`SELECT COUNT(*) AS n FROM tabs WHERE user_id = ?`),
+    countTabAssets: db.prepare(`SELECT COUNT(*) AS n FROM stocks WHERE user_id = ? AND tab_id = ?`),
+    moveTabAssets: db.prepare(`UPDATE stocks SET tab_id = ? WHERE user_id = ? AND tab_id = ?`),
+    deleteTab: db.prepare(`DELETE FROM tabs WHERE user_id = ? AND id = ?`),
+    deleteAllTabs: db.prepare(`DELETE FROM tabs WHERE user_id = ?`),
     deleteStock: db.prepare(`DELETE FROM stocks WHERE user_id = ? AND ticker = ?`),
     deleteAllStocks: db.prepare(`DELETE FROM stocks WHERE user_id = ?`),
 
@@ -357,16 +381,25 @@ export function createApp(
     return key ? `••••${key.slice(-4)}` : null;
   }
 
-  async function getQuoteCached(symbol: string, apiKey: string) {
+  async function getQuoteCached(symbol: string, apiKey: string, massiveKey?: string | null) {
     const now = Date.now();
     const cached = quoteCache.get(symbol);
     if (cached && cached.expiresAt > now) {
       return { raw: cached.value, cacheHit: true, ttlMs: cached.expiresAt - now };
     }
 
-    const raw = await finnhubFetch(
-      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(apiKey)}`
+    // Stocks: Finnhub quote. Crypto (X:BTCUSD): Finnhub's Binance USDT pair (live, 24/7).
+    let raw = await finnhubFetch(
+      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(finnhubQuoteSymbol(symbol))}&token=${encodeURIComponent(apiKey)}`
     );
+
+    // Crypto not listed on Binance: fall back to Massive's previous close (delayed).
+    if (isCryptoTicker(symbol) && !(Number(raw?.c) > 0) && massiveKey) {
+      raw = await candleService.cachedGet(`prev|${symbol}`, `/v2/aggs/ticker/${symbol}/prev?adjusted=true`, massiveKey, 15 * 60_000, (r) => {
+        const bar = Array.isArray(r?.results) ? r.results[0] : null;
+        return bar ? { c: bar.c, o: bar.o, h: bar.h, l: bar.l, pc: bar.o, d: bar.c - bar.o, dp: bar.o ? ((bar.c - bar.o) / bar.o) * 100 : 0, source: "massive-prev" } : { c: 0 };
+      });
+    }
 
     quoteCache.delete(symbol);
     if (quoteCache.size >= config.quoteCacheMaxEntries) {
@@ -390,6 +423,32 @@ export function createApp(
       prevClose: raw?.pc ?? null,
       raw,
     };
+  }
+
+  /** Crypto search (Massive reference data): USD pairs only, best matches first, cached 24 h. */
+  async function searchCrypto(query: string, massiveKey: string) {
+    const path = `/v3/reference/tickers?market=crypto&search=${encodeURIComponent(query)}&active=true&limit=100`;
+    let found: Array<{ symbol: string; description: string; displaySymbol: string }>;
+    try {
+      found = await candleService.cachedGet(`search|${query.toLowerCase()}`, path, massiveKey, 24 * 60 * 60_000, (raw) =>
+        (Array.isArray(raw?.results) ? raw.results : [])
+          .filter((r: any) => typeof r?.ticker === "string" && CRYPTO_TICKER_RE.test(r.ticker))
+          .map((r: any) => ({
+            symbol: r.ticker as string,
+            description: String(r.name ?? "").replace(/ - United States dollar$/i, "").trim() || displaySymbol(r.ticker),
+            displaySymbol: displaySymbol(r.ticker),
+          }))
+      );
+    } catch (error) {
+      if (error instanceof CandleError) throw new HttpError(error.status, error.message);
+      throw error;
+    }
+    const qU = query.toUpperCase();
+    const qL = query.toLowerCase();
+    const score = (r: { description: string; displaySymbol: string }) =>
+      r.displaySymbol === qU ? 0 : r.description.toLowerCase() === qL ? 1 : r.description.toLowerCase().startsWith(qL) ? 2 : r.displaySymbol.startsWith(qU) ? 3 : 4;
+    const result = [...found].sort((a, b) => score(a) - score(b) || a.description.length - b.description.length).slice(0, 20);
+    return { count: result.length, result };
   }
 
   function parseSymbol(value: unknown) {
@@ -475,6 +534,7 @@ export function createApp(
         const info = q.insertUser.run(email, displayName, passwordHash, timestamp, timestamp);
         const id = Number(info.lastInsertRowid);
         q.upsertSettings.run(id, config.port, "dark", "USD", 0, timestamp, timestamp);
+        q.insertTab.run(id, DEFAULT_TAB.name, DEFAULT_TAB.assetType, DEFAULT_TAB.color, 1, timestamp);
         return id;
       })();
 
@@ -648,11 +708,95 @@ export function createApp(
 
   app.post("/api/stocks", requireAuth, (req, res) => {
     const user = currentUser(res);
-    const { ticker, name } = parseBody(stockSchema, req.body);
-    if (q.getStock.get(user.id, ticker)) throw new HttpError(400, "Stock already exists");
+    const { ticker, name, tabId } = parseBody(stockSchema, req.body);
+    const tab = q.getTab.get(user.id, tabId) as { id: number; asset_type: string } | undefined;
+    if (!tab) throw new HttpError(404, "Aba não encontrada");
+    const assetType = assetTypeOfTicker(ticker);
+    if (tab.asset_type !== assetType) {
+      throw new HttpError(400, "Este ativo não é do tipo desta aba");
+    }
+    if (q.getStock.get(user.id, ticker)) throw new HttpError(400, "Este ativo já está na carteira");
 
-    q.insertStock.run(user.id, ticker, name, nowIso());
-    res.status(201).json({ ticker, name });
+    q.insertStock.run(user.id, ticker, name, nowIso(), assetType, tab.id);
+    res.status(201).json({ ticker, name, assetType, tabId: tab.id });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tabs (user-defined groups of assets, each bound to an asset type)
+  // ---------------------------------------------------------------------------
+  type TabRow = { id: number; name: string; asset_type: string; color: string; sort_order: number; asset_count?: number };
+  const tabDto = (t: TabRow) => ({
+    id: t.id,
+    name: t.name,
+    assetType: t.asset_type,
+    color: t.color,
+    sortOrder: t.sort_order,
+    assetCount: t.asset_count ?? 0,
+  });
+
+  app.get("/api/tabs", requireAuth, (_req, res) => {
+    res.json((q.getTabs.all(currentUser(res).id) as TabRow[]).map(tabDto));
+  });
+
+  app.post("/api/tabs", requireAuth, (req, res) => {
+    const user = currentUser(res);
+    const { name, assetType, color } = parseBody(tabCreateSchema, req.body);
+    if ((q.countTabs.get(user.id) as { n: number }).n >= 20) throw new HttpError(400, "Limite de 20 abas");
+    const order = (q.nextTabOrder.get(user.id) as { n: number }).n;
+    const id = Number(q.insertTab.run(user.id, name, assetType, color, order, nowIso()).lastInsertRowid);
+    res.status(201).json(tabDto({ ...(q.getTab.get(user.id, id) as TabRow), asset_count: 0 }));
+  });
+
+  app.patch("/api/tabs/:id", requireAuth, (req, res) => {
+    const user = currentUser(res);
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || !q.getTab.get(user.id, id)) throw new HttpError(404, "Aba não encontrada");
+    const { name, color } = parseBody(tabUpdateSchema, req.body);
+    q.updateTab.run(name ?? null, color ?? null, user.id, id);
+    res.json(tabDto(q.getTab.get(user.id, id) as TabRow));
+  });
+
+  app.post("/api/tabs/reorder", requireAuth, (req, res) => {
+    const user = currentUser(res);
+    const { ids } = parseBody(tabReorderSchema, req.body);
+    const mine = new Set((q.getTabs.all(user.id) as TabRow[]).map((t) => t.id));
+    if (ids.length !== mine.size || ids.some((id) => !mine.has(id)) || new Set(ids).size !== ids.length) {
+      throw new HttpError(400, "A nova ordem precisa conter todas as suas abas, uma vez cada");
+    }
+    db.transaction(() => ids.forEach((id, i) => q.setTabOrder.run(i + 1, user.id, id)))();
+    res.json((q.getTabs.all(user.id) as TabRow[]).map(tabDto));
+  });
+
+  app.delete("/api/tabs/:id", requireAuth, (req, res) => {
+    const user = currentUser(res);
+    const id = Number(req.params.id);
+    const tab = Number.isSafeInteger(id) ? (q.getTab.get(user.id, id) as TabRow | undefined) : undefined;
+    if (!tab) throw new HttpError(404, "Aba não encontrada");
+    if ((q.countTabs.get(user.id) as { n: number }).n <= 1) {
+      throw new HttpError(400, "Não é possível excluir a única aba");
+    }
+
+    const count = (q.countTabAssets.get(user.id, id) as { n: number }).n;
+    if (count > 0) {
+      // Never delete assets or trades silently: they must be moved to another tab of the same type.
+      const moveTo = Number(req.query.moveTo);
+      if (!req.query.moveTo) {
+        res.status(409).json({ error: `Esta aba tem ${count} ativo(s). Escolha para qual aba movê-los.`, code: "TAB_NOT_EMPTY", count });
+        return;
+      }
+      const target = Number.isSafeInteger(moveTo) ? (q.getTab.get(user.id, moveTo) as TabRow | undefined) : undefined;
+      if (!target || target.id === id) throw new HttpError(400, "Aba de destino inválida");
+      if (target.asset_type !== tab.asset_type) {
+        throw new HttpError(400, "A aba de destino precisa ser do mesmo tipo de ativo");
+      }
+      db.transaction(() => {
+        q.moveTabAssets.run(target.id, user.id, id);
+        q.deleteTab.run(user.id, id);
+      })();
+    } else {
+      q.deleteTab.run(user.id, id);
+    }
+    res.status(204).send();
   });
 
   app.delete("/api/stocks/:ticker", requireAuth, (req, res) => {
@@ -743,6 +887,13 @@ export function createApp(
         last_login_at: user.last_login_at,
       },
       settings,
+      tabs: (q.getTabs.all(user.id) as TabRow[]).map((t) => ({
+        id: t.id,
+        name: t.name,
+        asset_type: t.asset_type,
+        color: t.color,
+        sort_order: t.sort_order,
+      })),
       stocks: q.getStocks.all(user.id),
       transactions: q.getTxDesc.all(user.id),
     });
@@ -801,6 +952,20 @@ export function createApp(
 
       q.deleteAllTx.run(user.id);
       q.deleteAllStocks.run(user.id);
+      q.deleteAllTabs.run(user.id);
+
+      // Tabs from the backup (v0.8.0+); older backups have none and get default tabs below.
+      const tabIdMap = new Map<number, { id: number; assetType: string }>();
+      const backupTabs: any[] = Array.isArray(backup.tabs) ? backup.tabs.slice(0, 20) : [];
+      for (const t of backupTabs) {
+        const parsed = tabCreateSchema.safeParse({ name: t?.name, assetType: t?.asset_type, color: t?.color });
+        if (!parsed.success || !Number.isSafeInteger(Number(t?.id))) continue;
+        const order = (q.nextTabOrder.get(user.id) as { n: number }).n;
+        const newId = Number(
+          q.insertTab.run(user.id, parsed.data.name, parsed.data.assetType, parsed.data.color, order, nowIso()).lastInsertRowid
+        );
+        tabIdMap.set(Number(t.id), { id: newId, assetType: parsed.data.assetType });
+      }
 
       const knownTickers = new Set<string>();
       for (const s of stocks) {
@@ -810,7 +975,10 @@ export function createApp(
           skipped++;
           continue;
         }
-        q.insertStock.run(user.id, ticker, name, shortText(s?.created_at) || nowIso());
+        const assetType = assetTypeOfTicker(ticker);
+        const mapped = tabIdMap.get(Number(s?.tab_id));
+        const tabId = mapped && mapped.assetType === assetType ? mapped.id : null; // null: default tab below
+        q.insertStock.run(user.id, ticker, name, shortText(s?.created_at) || nowIso(), assetType, tabId);
         knownTickers.add(ticker);
       }
 
@@ -844,6 +1012,9 @@ export function createApp(
         // Throwing inside the transaction rolls back the whole restore.
         throw new HttpError(400, `Backup inválido: posição negativa em ${negative}`);
       }
+
+      // Assets without a valid tab (old backups) go to a default tab of their type.
+      ensureDefaultTabs(db);
     })();
 
     res.json({
@@ -851,6 +1022,7 @@ export function createApp(
       skipped,
       user: getSafeUser(q.getUserById.get(user.id) as UserRow),
       settings: q.getSettings.get(user.id),
+      tabs: (q.getTabs.all(user.id) as TabRow[]).map(tabDto),
       stocks: q.getStocks.all(user.id),
       transactions: q.getTxDesc.all(user.id),
     });
@@ -867,6 +1039,19 @@ export function createApp(
       if (!query) throw new HttpError(400, "Missing query (q/ticker/symbol)");
       if (query.length > LIMITS.searchQueryMax) throw new HttpError(400, "Query too long");
 
+      if (req.query.type === "crypto") {
+        const massiveKey = currentUser(res).massive_key;
+        if (!massiveKey) {
+          res.status(400).json({
+            error: "Configure a chave da Massive em Configurações → Conta para buscar criptos.",
+            code: "MASSIVE_KEY_MISSING",
+          });
+          return;
+        }
+        res.json(await searchCrypto(query, massiveKey));
+        return;
+      }
+
       const key = requireFinnhubKey(currentUser(res));
       const data = await finnhubFetch(
         `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${encodeURIComponent(key)}`
@@ -881,7 +1066,7 @@ export function createApp(
     wrap(async (req, res) => {
       const symbol = parseSymbol(req.query.symbol ?? req.query.ticker);
       const key = requireFinnhubKey(currentUser(res));
-      const { raw, cacheHit, ttlMs } = await getQuoteCached(symbol, key);
+      const { raw, cacheHit, ttlMs } = await getQuoteCached(symbol, key, currentUser(res).massive_key);
 
       res.setHeader("X-Cache", cacheHit ? "HIT" : "MISS");
       res.setHeader("X-Cache-TTL-MS", String(ttlMs));
@@ -906,7 +1091,8 @@ export function createApp(
       const symbols = [...new Set(parts.map(parseSymbol))];
       const key = requireFinnhubKey(currentUser(res));
 
-      const settled = await Promise.allSettled(symbols.map((s) => getQuoteCached(s, key)));
+      const massiveKey = currentUser(res).massive_key;
+      const settled = await Promise.allSettled(symbols.map((s) => getQuoteCached(s, key, massiveKey)));
       const results: Record<string, ReturnType<typeof toQuote>> = {};
       settled.forEach((outcome, i) => {
         if (outcome.status === "fulfilled") {
@@ -957,6 +1143,38 @@ export function createApp(
     requireAuth,
     wrap(async (req, res) => {
       const symbol = parseSymbol(req.query.symbol);
+
+      if (isCryptoTicker(symbol)) {
+        const massiveKey = currentUser(res).massive_key;
+        if (!massiveKey) throw new HttpError(400, "Configure a chave da Massive para ver as estatísticas.");
+        let candles;
+        try {
+          ({ candles } = await candleService.getCandles({ symbol, range: "1A", interval: "1D", apiKey: massiveKey }));
+        } catch (error) {
+          if (error instanceof CandleError) throw new HttpError(error.status, error.message);
+          throw error;
+        }
+        const last = candles.slice(-365);
+        const hi = last.reduce((m, c) => (c.h > m.h ? c : m), last[0] ?? { h: NaN, t: 0 });
+        const lo = last.reduce((m, c) => (c.l < m.l ? c : m), last[0] ?? { l: NaN, t: 0 });
+        const avg = (n: number) => {
+          const slice = last.slice(-n);
+          return slice.length ? slice.reduce((sum, c) => sum + c.v, 0) / slice.length / 1e6 : null; // millions, like Finnhub
+        };
+        return res.json({
+          symbol,
+          high52w: last.length ? hi.h : null,
+          high52wDate: last.length ? new Date(hi.t).toISOString().slice(0, 10) : null,
+          low52w: last.length ? lo.l : null,
+          low52wDate: last.length ? new Date(lo.t).toISOString().slice(0, 10) : null,
+          avgVolume10d: avg(10),
+          avgVolume3m: avg(90),
+          marketCap: null,
+          beta: null,
+          source: "massive",
+        });
+      }
+
       const key = requireFinnhubKey(currentUser(res));
 
       const hit = statsCache.get(symbol);

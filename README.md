@@ -1,12 +1,12 @@
 # NyseStockTracker_app
 
-Aplicação web full-stack para acompanhamento e análise de posições em ações da NYSE, com histórico de operações, cálculo de preço médio e métricas de performance.
+Aplicação web full-stack para acompanhamento e análise de posições em ações da NYSE e criptomoedas, com histórico de operações, cálculo de preço médio e métricas de performance.
 
 ## 😎 Visão Geral
 
 O projeto permite:
 
-- registrar compras e vendas de ações
+- registrar compras e vendas de ações e criptomoedas, organizadas em abas que você define
 - acompanhar histórico de transações
 - calcular preço médio ponderado (PM)
 - acompanhar lucro/prejuízo realizado e não realizado
@@ -49,8 +49,10 @@ O projeto permite:
 - Contas com senha, sessões com validade e carteira isolada por usuário
 - Backup e restauração em JSON
 - Quantidades e preços com até 8 casas decimais, calculados sem erro de arredondamento
-- Clique numa linha do Consolidado para abrir o ativo na aba Ações
-- Endereço próprio por tela (`#/acoes/AAPL`): botão voltar e favoritos funcionam
+- Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA ou Cripto)
+- Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico 24 h e estatísticas
+- Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
+- Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)
 - Conta: trocar senha (desconecta os outros aparelhos), trocar e-mail, trocar a chave da Finnhub (testada antes de salvar), sair de todos os aparelhos e ver as informações da conta
@@ -107,6 +109,8 @@ respostas em cache e respeita esse ritmo).
 1. Crie uma conta gratuita na Massive (de preferência com e-mail e senha, sem login social).
 2. Copie a chave em Dashboard → Keys.
 3. No app: Configurações → Conta → **Chave dos gráficos**. A chave é testada antes de ser salva.
+
+A mesma chave é usada para buscar criptomoedas e para o histórico delas.
 
 ## 🔒 Segurança
 
@@ -189,7 +193,7 @@ Verifica os tipos do TypeScript.
 | `server/validation.ts` | Validações puras de entrada e regras da carteira |
 | `server/app.ts` | `createApp()`: rotas da API, autenticação e middlewares |
 | `server/candles.ts` | Histórico de velas (Massive) com cache e controle de ritmo |
-| `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos e cálculo de preço médio |
+| `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos, cálculo de preço médio e tipos de ativo (`assetTypes.ts`) |
 | `server/backup.ts` | Backup online do SQLite com checagem de integridade e retenção |
 | `scripts/backup.ts` | Comando `npm run backup` |
 | `scripts/update.sh` | Comando de atualização com rollback automático |
@@ -200,7 +204,7 @@ Verifica os tipos do TypeScript.
 | Pasta | Responsabilidade |
 |---|---|
 | `src/App.tsx` | Orquestra login, abas, rotas e cabeçalho |
-| `src/features/` | Uma pasta por tela: `auth`, `onboarding`, `settings`, `actions`, `consolidated` |
+| `src/features/` | Uma pasta por tela: `auth`, `onboarding`, `settings` (inclui as abas), `actions` (tela de uma aba), `chart`, `consolidated` |
 | `src/hooks/` | Estado: `useAuth`, `usePortfolio`, `useHashRoute` |
 | `src/api/` | Cliente único da API (sempre confere a resposta) e as chamadas tipadas |
 | `src/components/ui.tsx` | Componentes visuais reaproveitáveis (cartão, aba, campo de senha) |
