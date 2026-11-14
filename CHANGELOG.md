@@ -16,6 +16,26 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.7.0] - 2026-11-14
+
+Charts: TradingView-style price chart for every asset. Database migration v4 is **additive** (one new column); rolling back to v0.6.x works on the same database.
+
+### Added
+- **Price chart** in the Ações tab (TradingView Lightweight Charts™ 5.3, Apache-2.0): candlesticks + volume, periods 1D · 1S · 1M · 3M · YTD · 1A · Máx with an automatic candle size (like TradingView) or a chosen one (5 min to 1 month), crosshair legend with Open/High/Low/Close, change and volume (with time on intraday candles), change over the selected period, local-time axis, and full screen (Esc to exit).
+- **Your trades on the chart**: ▲ buys and ▼ sells as markers, and a dashed **"Meu PM"** line at your average price.
+- **Statistics card**: 52-week low/high with a position bar, average volume (10 days / 3 months), market cap and beta (Finnhub).
+- **Massive (ex-Polygon) key** per user for historical candles: Settings → Conta → "Chave dos gráficos", tested before saving, shown masked, never exported in backups.
+- `GET /api/candles`, `GET /api/stats`, `POST /api/auth/massive-key`; `MASSIVE_BASE_URL` (advanced/testing).
+- Tests: 58 (12 new for candles, pacing, key handling and the new routes).
+
+### Changed
+- The delete-account button explains why it is locked until the password and e-mail are filled in.
+- Chart code is lazy-loaded (separate ~188 kB chunk), so the first page load stays about the same size.
+
+### Notes
+- Why Massive: the free Finnhub plan returns "You don't have access" for candles (tested with a real key), and the free Twelve Data plan is licensed for "internal non-display usage" only. The free Massive plan is licensed for personal, non-professional use, with 2 years of history and 5 requests per minute; the server caches and paces calls so the chart never hits that limit. Data is delayed.
+
+
 ## [0.6.0] - 2026-11-14
 
 Account settings: the "Conta" area in Settings is now fully working. No database migration.

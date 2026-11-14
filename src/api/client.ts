@@ -1,6 +1,6 @@
 /** Error returned by the API, with a message that is safe to show to the user. */
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
   }
 }
@@ -38,7 +38,7 @@ export async function api<T = unknown>(
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, data?.error || `Erro ${res.status}`);
+    throw new ApiError(res.status, data?.error || `Erro ${res.status}`, typeof data?.code === "string" ? data.code : undefined);
   }
   return data as T;
 }

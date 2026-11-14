@@ -88,14 +88,17 @@ export const transactionSchema = z.object({
   date: isoDateSchema,
 });
 
-export const finnhubKeySchema = z.object({
-  apiKey: z
-    .string()
-    .trim()
-    .min(LIMITS.finnhubKeyMin, "Chave muito curta")
-    .max(LIMITS.finnhubKeyMax, "Chave muito longa")
-    .regex(FINNHUB_KEY_RE, "Formato de chave inválido"),
-});
+const apiKeyField = z
+  .string()
+  .trim()
+  .min(LIMITS.finnhubKeyMin, "Chave muito curta")
+  .max(LIMITS.finnhubKeyMax, "Chave muito longa")
+  .regex(FINNHUB_KEY_RE, "Formato de chave inválido");
+
+export const finnhubKeySchema = z.object({ apiKey: apiKeyField });
+
+/** Massive (ex-Polygon) key, used only for historical candles (charts). */
+export const massiveKeySchema = z.object({ apiKey: apiKeyField });
 
 export const deleteAccountSchema = z.object({
   password: z.string().min(1, "Informe a senha").max(1024),

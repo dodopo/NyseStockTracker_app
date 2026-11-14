@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from "react";
+import React, { Suspense, lazy, useId, useMemo, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, History, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { format } from "date-fns";
@@ -11,15 +11,20 @@ import type { Stock, TransactionType } from "../../types";
 import { calculatePosition } from "../../../shared/positions";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
 import { compareTransactions } from "../../../shared/validation";
+// The chart library is large: load it only when an asset is opened.
+const PriceChart = lazy(() => import("../chart/PriceChart").then((m) => ({ default: m.PriceChart })));
+import { StatsCard } from "../chart/StatsCard";
 
 export function ActionsDashboard({
   portfolio,
   selectedTicker,
   onSelect,
+  onOpenSettings,
 }: {
   portfolio: PortfolioState;
   selectedTicker: string | null;
   onSelect: (ticker: string | null) => void;
+  onOpenSettings: () => void;
 }) {
   const { stocks, transactions, prices } = portfolio;
   const currentStock = stocks.find((s) => s.ticker === selectedTicker) ?? null;
@@ -39,6 +44,7 @@ export function ActionsDashboard({
             portfolio={portfolio}
             price={prices[currentStock.ticker]}
             transactions={transactions.filter((t) => t.ticker === currentStock.ticker)}
+            onOpenSettings={onOpenSettings}
           />
         ) : (
           <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-tv-text/20 space-y-4">
@@ -207,11 +213,13 @@ function StockDetail({
   portfolio,
   price,
   transactions,
+  onOpenSettings,
 }: {
   stock: Stock;
   portfolio: PortfolioState;
   price: PortfolioState["prices"][string] | undefined;
   transactions: PortfolioState["transactions"];
+  onOpenSettings: () => void;
 }) {
   const currentPrice = price?.price || 0;
   const position = useMemo(() => calculatePosition(transactions, currentPrice), [transactions, currentPrice]);
@@ -247,6 +255,20 @@ function StockDetail({
         </div>
       </div>
 
+      <Suspense
+        fallback={
+          <Card className="h-[520px] flex items-center justify-center text-sm text-tv-text/40">Carregando gráfico…</Card>
+        }
+      >
+        <PriceChart
+          symbol={stock.ticker}
+          transactions={transactions}
+          avgCost={position.avgCost}
+          hasPosition={position.shares > 0}
+          onOpenSettings={onOpenSettings}
+        />
+      </Suspense>
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Card title="Posição (Qtd)">
           <div className="text-2xl font-bold font-mono">{formatQuantity(position.quantity)}</div>
@@ -264,6 +286,8 @@ function StockDetail({
           <div className="text-xs text-tv-text/40">{position.unrealizedPnLPct.toFixed(2)}%</div>
         </Card>
       </div>
+
+      <StatsCard symbol={stock.ticker} currentPrice={currentPrice} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <TransactionForm ticker={stock.ticker} portfolio={portfolio} />

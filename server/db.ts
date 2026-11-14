@@ -137,6 +137,15 @@ const MIGRATIONS: Array<{ version: number; up: (db: DB) => void }> = [
       }
     },
   },
+  {
+    // v4 = v0.7.0 charts: each user's own Massive key (historical candles). Additive.
+    version: 4,
+    up: (db) => {
+      if (!tableHasColumn(db, "users", "massive_key")) {
+        db.exec(`ALTER TABLE users ADD COLUMN massive_key TEXT;`);
+      }
+    },
+  },
 ];
 
 /**

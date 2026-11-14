@@ -163,7 +163,12 @@ export default function App() {
             transition={{ duration: 0.2 }}
           >
             {route.tab === "acoes" ? (
-              <ActionsDashboard portfolio={portfolio} selectedTicker={selectedTicker} onSelect={openAsset} />
+              <ActionsDashboard
+                portfolio={portfolio}
+                selectedTicker={selectedTicker}
+                onSelect={openAsset}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
             ) : (
               <ConsolidatedDashboard
                 portfolio={portfolio}

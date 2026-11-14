@@ -23,6 +23,7 @@ export type AuthUser = {
   displayName: string | null;
   hasPassword: boolean;
   hasFinnhubKey: boolean;
+  hasMassiveKey: boolean;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
@@ -66,4 +67,28 @@ export type BackupFileData = {
     created_at?: string;
     sort_order?: number;
   }>;
+};
+
+export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
+
+export type CandlesResponse = {
+  symbol: string;
+  range: string;
+  interval: string;
+  source: string;
+  candles: Candle[];
+  cached?: boolean;
+  stale?: boolean;
+};
+
+export type StockStats = {
+  symbol: string;
+  high52w: number | null;
+  high52wDate: string | null;
+  low52w: number | null;
+  low52wDate: string | null;
+  avgVolume10d: number | null;
+  avgVolume3m: number | null;
+  marketCap: number | null;
+  beta: number | null;
 };

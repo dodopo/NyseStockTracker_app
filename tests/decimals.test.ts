@@ -122,7 +122,7 @@ describe("migração v3 e compatibilidade de rollback", () => {
     expect(list.body[0].shares).toBe("0.00000001");
   });
 
-  it("um banco v2 (v0.4.x) sobe para v3 sem perder nada", () => {
+  it("um banco v2 (v0.4.x) sobe para a versão atual sem perder nada", () => {
     const legacy = new Database(":memory:");
     legacy.pragma("foreign_keys = ON");
     migrate(legacy);
@@ -137,7 +137,7 @@ describe("migração v3 e compatibilidade de rollback", () => {
 
     migrate(legacy);
 
-    expect(legacy.pragma("user_version", { simple: true })).toBe(3);
+    expect(legacy.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
     expect(legacy.prepare(`SELECT shares_dec, price_dec FROM transactions`).get()).toEqual({
       shares_dec: "3",
       price_dec: "100.5",
