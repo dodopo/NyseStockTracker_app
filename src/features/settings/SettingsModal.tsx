@@ -596,6 +596,13 @@ function DeleteAccountCard({ user, onDeleted }: { user: AuthUser; onDeleted: () 
   const emailId = useId();
 
   const emailMatches = confirmEmail.trim().toLowerCase() === user.email;
+  const hintId = useId();
+  const locked = !emailMatches || !password;
+  const hint = !password && !emailMatches
+    ? "Preencha a sua senha e digite o seu e-mail para liberar a exclusão."
+    : !password
+      ? "Preencha a sua senha para liberar a exclusão."
+      : "Digite o seu e-mail exatamente como cadastrado para liberar a exclusão.";
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -639,12 +646,18 @@ function DeleteAccountCard({ user, onDeleted }: { user: AuthUser; onDeleted: () 
 
         <button
           type="submit"
-          disabled={deleting || !emailMatches || !password}
+          disabled={deleting || locked}
+          aria-describedby={locked ? hintId : undefined}
           className="flex items-center gap-2 px-4 py-2 rounded bg-tv-down text-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
           Excluir minha conta
         </button>
+        {locked && (
+          <p id={hintId} className="text-xs text-tv-text/50">
+            {hint}
+          </p>
+        )}
 
         <ErrorMessage>{error}</ErrorMessage>
       </form>

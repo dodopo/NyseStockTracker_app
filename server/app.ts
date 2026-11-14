@@ -5,6 +5,7 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import type { z } from "zod";
 import type { AppConfig } from "./config";
+import { CandleError, createCandleService, defaultMassiveFetch, type MassiveFetch } from "./candles";
 import type { DB } from "./db";
 import { parsePositiveDecimal } from "../shared/decimal";
 import {
@@ -14,6 +15,7 @@ import {
   finnhubKeySchema,
   firstIssue,
   loginSchema,
+  massiveKeySchema,
   registerSchema,
   stockSchema,
   transactionSchema,
@@ -41,6 +43,7 @@ type UserRow = {
   display_name: string | null;
   password_hash: string | null;
   finnhub_key: string | null;
+  massive_key: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -107,6 +110,7 @@ function getSafeUser(user: UserRow | undefined) {
     displayName: user.display_name,
     hasPassword: !!user.password_hash,
     hasFinnhubKey: !!user.finnhub_key,
+    hasMassiveKey: !!user.massive_key,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
     lastLoginAt: user.last_login_at,
@@ -125,9 +129,12 @@ const wrap =
 export function createApp(
   db: DB,
   config: AppConfig,
-  deps: { finnhubFetch?: FinnhubFetch } = {}
+  deps: { finnhubFetch?: FinnhubFetch; massiveFetch?: MassiveFetch; now?: () => number } = {}
 ) {
   const finnhubFetch = deps.finnhubFetch ?? defaultFinnhubFetch;
+  const massiveFetch = deps.massiveFetch ?? defaultMassiveFetch;
+  const candleService = createCandleService({ fetch: massiveFetch, now: deps.now });
+  const statsCache = new Map<string, { value: unknown; expiresAt: number }>();
 
   // ---------------------------------------------------------------------------
   // Prepared statements (all parameterized, all scoped by user_id)
@@ -172,6 +179,7 @@ export function createApp(
     ),
     updateLastLogin: db.prepare(`UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`),
     updateFinnhubKey: db.prepare(`UPDATE users SET finnhub_key = ?, updated_at = ? WHERE id = ?`),
+    updateMassiveKey: db.prepare(`UPDATE users SET massive_key = ?, updated_at = ? WHERE id = ?`),
     updatePassword: db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`),
     updateEmail: db.prepare(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`),
     updateProfileFromBackup: db.prepare(
@@ -322,6 +330,21 @@ export function createApp(
     }
     if (!raw || typeof raw !== "object" || !("c" in raw)) {
       throw new HttpError(400, "A Finnhub não confirmou esta chave. Tente de novo em instantes.");
+    }
+  }
+
+  /** Confirms a Massive key works (one small daily-candle request) before saving it. */
+  async function verifyMassiveKey(apiKey: string) {
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
+    let raw: any;
+    try {
+      raw = await massiveFetch(`/v2/aggs/ticker/AAPL/range/1/day/${from}/${to}?adjusted=true&limit=20`, apiKey);
+    } catch {
+      throw new HttpError(400, "A Massive recusou esta chave. Confira se copiou a chave inteira.");
+    }
+    if (!raw || typeof raw !== "object" || !Array.isArray(raw.results)) {
+      throw new HttpError(400, "A Massive não confirmou esta chave. Tente de novo em instantes.");
     }
   }
 
@@ -521,6 +544,20 @@ export function createApp(
     })
   );
 
+  app.post(
+    "/api/auth/massive-key",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const { apiKey } = parseBody(massiveKeySchema, req.body);
+      await verifyMassiveKey(apiKey);
+
+      q.updateMassiveKey.run(apiKey, nowIso(), user.id);
+      res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
+    })
+  );
+
   // ---------------------------------------------------------------------------
   // Account (settings)
   // ---------------------------------------------------------------------------
@@ -533,6 +570,7 @@ export function createApp(
       createdAt: user.created_at,
       lastLoginAt: user.last_login_at,
       finnhubKeyHint: keyHint(user.finnhub_key),
+      massiveKeyHint: keyHint(user.massive_key),
       activeSessions: n,
       appVersion: config.appVersion,
     });
@@ -879,6 +917,79 @@ export function createApp(
       });
 
       res.json(results);
+    })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Charts: historical candles (Massive) and key statistics (Finnhub)
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/api/candles",
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const symbol = parseSymbol(req.query.symbol);
+      if (!user.massive_key) {
+        res.status(400).json({
+          error: "Configure a chave da Massive em Configurações → Conta para ver os gráficos.",
+          code: "MASSIVE_KEY_MISSING",
+        });
+        return;
+      }
+      try {
+        const result = await candleService.getCandles({
+          symbol,
+          range: String(req.query.range ?? "1A"),
+          interval: req.query.interval ? String(req.query.interval) : undefined,
+          apiKey: user.massive_key,
+        });
+        res.setHeader("Cache-Control", "no-store");
+        res.json({ symbol, range: String(req.query.range ?? "1A"), source: "massive", ...result });
+      } catch (error) {
+        if (error instanceof CandleError) throw new HttpError(error.status, error.message);
+        throw error;
+      }
+    })
+  );
+
+  app.get(
+    "/api/stats",
+    requireAuth,
+    wrap(async (req, res) => {
+      const symbol = parseSymbol(req.query.symbol);
+      const key = requireFinnhubKey(currentUser(res));
+
+      const hit = statsCache.get(symbol);
+      if (hit && hit.expiresAt > Date.now()) return res.json(hit.value);
+
+      let raw: any;
+      try {
+        raw = await finnhubFetch(
+          `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${encodeURIComponent(key)}`
+        );
+      } catch {
+        throw new HttpError(502, "Não foi possível buscar as estatísticas agora.");
+      }
+      const m = raw?.metric ?? {};
+      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      const value = {
+        symbol,
+        high52w: num(m["52WeekHigh"]),
+        high52wDate: typeof m["52WeekHighDate"] === "string" ? m["52WeekHighDate"] : null,
+        low52w: num(m["52WeekLow"]),
+        low52wDate: typeof m["52WeekLowDate"] === "string" ? m["52WeekLowDate"] : null,
+        avgVolume10d: num(m["10DayAverageTradingVolume"]), // millions of shares
+        avgVolume3m: num(m["3MonthAverageTradingVolume"]), // millions of shares
+        marketCap: num(m["marketCapitalization"]), // millions of USD
+        beta: num(m["beta"]),
+      };
+      statsCache.delete(symbol);
+      if (statsCache.size >= 300) {
+        const oldest = statsCache.keys().next().value;
+        if (oldest !== undefined) statsCache.delete(oldest);
+      }
+      statsCache.set(symbol, { value, expiresAt: Date.now() + 6 * 60 * 60_000 });
+      res.json(value);
     })
   );
 
