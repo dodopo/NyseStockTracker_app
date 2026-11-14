@@ -55,7 +55,7 @@ export default function App() {
     [auth, portfolio]
   );
 
-  const onAccountDeleted = useCallback(() => {
+  const onSignedOut = useCallback(() => {
     setSettingsOpen(false);
     auth.setUser(null);
     navigate({ tab: "consolidado" }, { replace: true });
@@ -80,7 +80,8 @@ export default function App() {
         user={user}
         onClose={() => setSettingsOpen(false)}
         onRestored={onRestored}
-        onAccountDeleted={onAccountDeleted}
+        onUserChanged={auth.setUser}
+        onSignedOut={onSignedOut}
       />
 
       <header className="tv-card border-x-0 border-t-0 rounded-none px-6 py-4 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
