@@ -52,6 +52,7 @@ O projeto permite:
 - Endereço próprio por tela (`#/acoes/AAPL`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)
+- Conta: trocar senha (desconecta os outros aparelhos), trocar e-mail, trocar a chave da Finnhub (testada antes de salvar), sair de todos os aparelhos e ver as informações da conta
 
 
 ## 📦 Instalação
