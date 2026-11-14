@@ -32,8 +32,9 @@ O projeto permite:
 ### Banco de dados
 - SQLite via better-sqlite3 (armazenamento local, migrações versionadas)
 
-### API externa
-- Finnhub
+### APIs externas
+- Finnhub (cotações, busca de ativos e estatísticas)
+- Massive, ex-Polygon (histórico para os gráficos)
 
 
 ## Funcionalidades atuais
@@ -53,6 +54,8 @@ O projeto permite:
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)
 - Conta: trocar senha (desconecta os outros aparelhos), trocar e-mail, trocar a chave da Finnhub (testada antes de salvar), sair de todos os aparelhos e ver as informações da conta
+- Gráfico estilo TradingView por ativo: velas e volume, períodos de 1 dia a 2 anos, legenda com abertura/máxima/mínima/fechamento, tela cheia, **as suas compras e vendas marcadas** e a linha do seu preço médio
+- Estatísticas: mínima e máxima de 52 semanas, volume médio, valor de mercado e beta
 
 
 ## 📦 Instalação
@@ -93,6 +96,17 @@ O app usa a API gratuita da [Finnhub](https://finnhub.io/) para cotações. Cada
 2. Faça login no app e cole a chave na tela "Configuração Inicial".
 
 > O plano gratuito da Finnhub tem limite de requisições por minuto.
+
+## 📈 Chave da Massive (gráficos)
+
+O plano gratuito da Finnhub não entrega histórico de preços, então os gráficos usam a
+[Massive](https://massive.com/) (antiga Polygon.io). O plano **Stocks Basic** é gratuito, para uso
+pessoal e não profissional, com 2 anos de histórico e 5 consultas por minuto (o servidor guarda as
+respostas em cache e respeita esse ritmo).
+
+1. Crie uma conta gratuita na Massive (de preferência com e-mail e senha, sem login social).
+2. Copie a chave em Dashboard → Keys.
+3. No app: Configurações → Conta → **Chave dos gráficos**. A chave é testada antes de ser salva.
 
 ## 🔒 Segurança
 
@@ -174,6 +188,7 @@ Verifica os tipos do TypeScript.
 | `server/db.ts` | Abertura do SQLite e migrações versionadas (`PRAGMA user_version`) |
 | `server/validation.ts` | Validações puras de entrada e regras da carteira |
 | `server/app.ts` | `createApp()`: rotas da API, autenticação e middlewares |
+| `server/candles.ts` | Histórico de velas (Massive) com cache e controle de ritmo |
 | `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos e cálculo de preço médio |
 | `server/backup.ts` | Backup online do SQLite com checagem de integridade e retenção |
 | `scripts/backup.ts` | Comando `npm run backup` |
@@ -199,3 +214,8 @@ git checkout v0.2.0
 ```
 
 A partir da v0.3.0 o banco passa por migrações. Antes de atualizar, faça uma cópia do arquivo `portfolio.db`; para voltar a uma versão anterior, restaure também a cópia do banco feita antes da atualização.
+
+## 🙏 Créditos
+
+Gráficos feitos com [TradingView Lightweight Charts™](https://www.tradingview.com/lightweight-charts/)
+(Apache-2.0), Copyright © TradingView, Inc. — https://www.tradingview.com/
