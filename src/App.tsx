@@ -211,6 +211,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
 
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
   const [mode, setMode] = useState<ConsolidationMode>("SEPARATED");
@@ -252,6 +253,7 @@ export default function App() {
     try {
       const res = await fetch("/api/auth/me");
       const data = await res.json();
+      setRegistrationEnabled(data?.registrationEnabled !== false);
 
       if (data?.authenticated && data?.user) {
         setCurrentUser(data.user);
@@ -444,20 +446,19 @@ export default function App() {
             <h2 className="text-3xl font-bold mb-4">Controle sua carteira com acesso por usuário</h2>
 
             <div className="space-y-3 text-tv-text/70 leading-relaxed">
-              <p>Agora o app já está preparado para autenticação local com múltiplos usuários.</p>
+              <p>Cada usuário tem a sua carteira isolada e a sua própria chave da Finnhub.</p>
               <p>
-                Você pode criar uma conta com senha <strong>opcional</strong>, ideal para uso local
-                sem complicação nesta fase inicial.
+                O acesso exige senha de pelo menos <strong>12 caracteres</strong>. A sessão expira
+                automaticamente.
               </p>
-              <p>
-                Nos próximos passos, vamos adicionar onboarding da Finnhub key, isolamento de dados
-                por usuário e backup/import completo.
-              </p>
+              {!registrationEnabled && (
+                <p>Novos cadastros estão desativados neste servidor.</p>
+              )}
             </div>
           </Card>
 
           <Card className="p-8">
-            <div className="flex gap-2 p-1 bg-white/5 rounded mb-6">
+            <div className={cn("flex gap-2 p-1 bg-white/5 rounded mb-6", !registrationEnabled && "hidden")}>
               <button
                 type="button"
                 onClick={() => {
@@ -486,7 +487,7 @@ export default function App() {
               </button>
             </div>
 
-            {mode === "login" ? (
+            {mode === "login" || !registrationEnabled ? (
               <form onSubmit={submitLogin} className="space-y-4">
                 <div className="space-y-1">
                   <label className="text-[10px] uppercase text-tv-text/40 font-bold">E-mail</label>
@@ -506,7 +507,8 @@ export default function App() {
                     className="tv-input w-full"
                     value={form.password}
                     onChange={(e) => onChange("password", e.target.value)}
-                    placeholder="Opcional se a conta foi criada sem senha"
+                    autoComplete="current-password"
+                    required
                   />
                 </div>
 
@@ -518,10 +520,6 @@ export default function App() {
                   {submitting ? <Loader2 size={18} className="animate-spin" /> : null}
                   Entrar
                 </button>
-
-                <div className="text-xs text-tv-text/50 leading-relaxed">
-                  Se a sua conta foi criada sem senha, basta informar o e-mail para entrar.
-                </div>
 
                 {authError && (
                   <div className="text-xs text-tv-down bg-tv-down/10 border border-tv-down/30 rounded p-2">
@@ -562,7 +560,10 @@ export default function App() {
                     className="tv-input w-full"
                     value={form.password}
                     onChange={(e) => onChange("password", e.target.value)}
-                    placeholder="Opcional para uso local"
+                    placeholder="Mínimo de 12 caracteres"
+                    autoComplete="new-password"
+                    minLength={12}
+                    required
                   />
                 </div>
 
@@ -575,7 +576,10 @@ export default function App() {
                     className="tv-input w-full"
                     value={form.confirmPassword}
                     onChange={(e) => onChange("confirmPassword", e.target.value)}
-                    placeholder="Repita a senha apenas se definiu uma"
+                    placeholder="Repita a senha"
+                    autoComplete="new-password"
+                    minLength={12}
+                    required
                   />
                 </div>
 
@@ -588,10 +592,6 @@ export default function App() {
                   Criar conta
                 </button>
 
-                <div className="text-xs text-tv-text/50 leading-relaxed">
-                  A senha é opcional nesta fase inicial porque o app é local. Se você deixar em
-                  branco, qualquer pessoa com acesso a este computador poderá entrar nesta conta.
-                </div>
 
                 {authError && (
                   <div className="text-xs text-tv-down bg-tv-down/10 border border-tv-down/30 rounded p-2">
@@ -1163,7 +1163,12 @@ export default function App() {
 
     const deleteTransaction = async (id?: number) => {
       if (!id) return;
-      await fetch(`/api/transactions/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/transactions/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err?.error || "Não foi possível excluir a operação.");
+        return;
+      }
       const updatedTrans = await (await fetch("/api/transactions?order=desc")).json();
       setTransactions(updatedTrans);
     };
@@ -1697,7 +1702,7 @@ export default function App() {
               {currentUser.displayName || currentUser.email}
             </div>
             <div className="text-[10px] uppercase tracking-widest text-tv-text/40 font-bold">
-              {currentUser.hasPassword ? "Conta com senha" : "Conta local sem senha"}
+              Sessão protegida
             </div>
           </div>
 
