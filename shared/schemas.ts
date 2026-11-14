@@ -102,6 +102,26 @@ export const deleteAccountSchema = z.object({
   confirmEmail: z.string().trim().toLowerCase().max(LIMITS.emailMax),
 });
 
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Informe a senha atual").max(1024),
+    newPassword: passwordSchema,
+    confirmPassword: z.string(),
+  })
+  .refine((d) => d.newPassword === d.confirmPassword, {
+    message: "A confirmação da nova senha não confere",
+    path: ["confirmPassword"],
+  })
+  .refine((d) => d.newPassword !== d.currentPassword, {
+    message: "A nova senha precisa ser diferente da atual",
+    path: ["newPassword"],
+  });
+
+export const changeEmailSchema = z.object({
+  currentPassword: z.string().min(1, "Informe a senha atual").max(1024),
+  newEmail: emailSchema,
+});
+
 /** First human-readable message of a failed parse. */
 export function firstIssue(error: z.ZodError) {
   return error.issues[0]?.message ?? "Dados inválidos";

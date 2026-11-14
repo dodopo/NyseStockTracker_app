@@ -150,10 +150,11 @@ describe("abuso (ALTO: força bruta e cota da Finnhub)", () => {
     const agent = await register(app);
     await agent.post("/api/auth/finnhub-key").send({ apiKey: "abcdefghij1234567890" });
 
+    const callsAfterKeyCheck = fetchCalls.length; // saving the key makes 1 verification call
     const many = Array.from({ length: 51 }, (_, i) => `T${i}`).join(",");
     expect((await agent.get(`/api/prices?symbols=${many}`)).status).toBe(400);
     expect((await agent.get(`/api/prices?symbols=AAPL,<script>`)).status).toBe(400);
-    expect(fetchCalls).toHaveLength(0);
+    expect(fetchCalls).toHaveLength(callsAfterKeyCheck);
 
     const ok = await agent.get(`/api/prices?symbols=AAPL,MSFT,AAPL`);
     expect(ok.status).toBe(200);
@@ -163,11 +164,14 @@ describe("abuso (ALTO: força bruta e cota da Finnhub)", () => {
 
 describe("vazamento de informação (MÉDIO)", () => {
   it("erro interno não devolve a mensagem original ao cliente", async () => {
+    let calls = 0;
     const { app } = setup({}, async () => {
+      // First call = key verification (succeeds); later calls fail with internal details.
+      if (calls++ === 0) return { c: 1 };
       throw new Error("SECRET-DETAIL token=abc123");
     });
     const agent = await register(app);
-    await agent.post("/api/auth/finnhub-key").send({ apiKey: "abcdefghij1234567890" });
+    expect((await agent.post("/api/auth/finnhub-key").send({ apiKey: "abcdefghij1234567890" })).status).toBe(200);
 
     const res = await agent.get("/api/quote?symbol=AAPL");
     expect(res.status).toBe(500);
