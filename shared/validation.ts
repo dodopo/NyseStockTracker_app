@@ -1,6 +1,7 @@
 /**
- * Pure input validators. No database, no I/O: easy to test and to reuse.
+ * Pure input validators shared by server and browser. No database, no I/O.
  */
+import { Big } from "./decimal";
 
 export const LIMITS = {
   emailMax: 254,
@@ -10,7 +11,6 @@ export const LIMITS = {
   stockNameMax: 120,
   searchQueryMax: 50,
   symbolsPerRequest: 50,
-  amountMax: 1_000_000_000,
   importStocksMax: 1_000,
   importTransactionsMax: 20_000,
   finnhubKeyMin: 10,
@@ -18,10 +18,10 @@ export const LIMITS = {
   shortTextMax: 40,
 } as const;
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const TICKER_RE = /^[A-Z0-9][A-Z0-9.\-]{0,14}$/;
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const TICKER_RE = /^[A-Z0-9][A-Z0-9.\-]{0,14}$/;
+export const FINNHUB_KEY_RE = /^[A-Za-z0-9_-]+$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const FINNHUB_KEY_RE = /^[A-Za-z0-9_-]+$/;
 
 export function normalizeEmail(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
@@ -35,11 +35,15 @@ export function isValidEmail(email: string) {
   return email.length > 0 && email.length <= LIMITS.emailMax && EMAIL_RE.test(email);
 }
 
+export function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
+
 export function passwordProblem(password: string): string | null {
   if (password.length < LIMITS.passwordMin) {
     return `A senha precisa ter pelo menos ${LIMITS.passwordMin} caracteres`;
   }
-  if (Buffer.byteLength(password, "utf8") > LIMITS.passwordMaxBytes) {
+  if (utf8ByteLength(password) > LIMITS.passwordMaxBytes) {
     return `A senha pode ter no máximo ${LIMITS.passwordMaxBytes} bytes`;
   }
   return null;
@@ -58,10 +62,6 @@ export function isValidIsoDate(value: string) {
   return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }
 
-export function isValidAmount(value: number) {
-  return Number.isFinite(value) && value > 0 && value <= LIMITS.amountMax;
-}
-
 export function isValidFinnhubKey(value: string) {
   return (
     value.length >= LIMITS.finnhubKeyMin &&
@@ -78,27 +78,31 @@ export type PositionTx = {
   id?: number;
   ticker: string;
   type: "BUY" | "SELL";
-  shares: number;
+  shares: string | number;
   date: string;
   sort_order?: number;
 };
 
+/** Chronological order used everywhere: date, then sort_order, then id. */
+export function compareTransactions<T extends { date: string; sort_order?: number; id?: number }>(a: T, b: T) {
+  return (
+    a.date.localeCompare(b.date) ||
+    (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+    (a.id ?? Number.MAX_SAFE_INTEGER) - (b.id ?? Number.MAX_SAFE_INTEGER)
+  );
+}
+
 /**
- * Replays transactions in chronological order (date, sort_order, id) and
- * returns the first ticker whose position goes below zero, or null.
+ * Replays transactions in chronological order with exact decimals and returns
+ * the first ticker whose position goes below zero, or null.
  */
 export function findNegativePosition(transactions: PositionTx[]): string | null {
-  const ordered = [...transactions].sort(
-    (a, b) =>
-      a.date.localeCompare(b.date) ||
-      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
-      (a.id ?? Number.MAX_SAFE_INTEGER) - (b.id ?? Number.MAX_SAFE_INTEGER)
-  );
-
-  const held = new Map<string, number>();
-  for (const tx of ordered) {
-    const next = (held.get(tx.ticker) ?? 0) + (tx.type === "BUY" ? tx.shares : -tx.shares);
-    if (next < -1e-9) return tx.ticker;
+  const held = new Map<string, Big>();
+  for (const tx of [...transactions].sort(compareTransactions)) {
+    const qty = new Big(tx.shares);
+    const current = held.get(tx.ticker) ?? new Big(0);
+    const next = tx.type === "BUY" ? current.plus(qty) : current.minus(qty);
+    if (next.lt(0)) return tx.ticker;
     held.set(tx.ticker, next);
   }
   return null;
