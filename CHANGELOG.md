@@ -16,6 +16,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.4.1] - 2026-11-14
+
+### Fixed
+- Install failed on Node.js 26: `better-sqlite3` 12.x does not compile against the Node 26 V8 API. Upgraded to `better-sqlite3` 13.2, which uses N-API, so the native module no longer breaks on new Node.js major versions. Verified on Node 25 (dev) and Node 26 (server).
+
+
 ## [0.4.0] - 2026-11-14
 
 Self-hosting kit: run the app 24/7 on a personal Mac, private and without paid cloud.
