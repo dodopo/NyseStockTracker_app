@@ -198,7 +198,8 @@ describe("vazamento de informação (MÉDIO)", () => {
 
 describe("isolamento e regras da carteira", () => {
   async function seedPortfolio(agent: request.Agent) {
-    await agent.post("/api/stocks").send({ ticker: "AAPL", name: "Apple" });
+    const tabId = (await agent.get("/api/tabs")).body[0].id; // default "Ações" tab
+    await agent.post("/api/stocks").send({ ticker: "AAPL", name: "Apple", tabId });
     const buy = await agent
       .post("/api/transactions")
       .send({ ticker: "AAPL", type: "BUY", shares: 10, price: 100, date: "2026-01-02" });
@@ -322,7 +323,8 @@ describe("excluir a própria conta", () => {
   it("exige a senha certa e o e-mail digitado; apaga tudo em cascata", async () => {
     const { app, db } = setup();
     const agent = await register(app, "ana@example.com");
-    await agent.post("/api/stocks").send({ ticker: "AAPL", name: "Apple" });
+    const tabId = (await agent.get("/api/tabs")).body[0].id; // default "Ações" tab
+    await agent.post("/api/stocks").send({ ticker: "AAPL", name: "Apple", tabId });
     await agent
       .post("/api/transactions")
       .send({ ticker: "AAPL", type: "BUY", shares: "1", price: "100", date: "2026-01-02" });

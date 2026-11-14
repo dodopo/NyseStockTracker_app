@@ -4,6 +4,7 @@
  */
 import { z } from "zod";
 import { parsePositiveDecimal } from "./decimal";
+import { ASSET_TYPE_IDS, TAB_COLORS } from "./assetTypes";
 import {
   EMAIL_RE,
   FINNHUB_KEY_RE,
@@ -75,6 +76,24 @@ export const loginSchema = z.object({
 export const stockSchema = z.object({
   ticker: tickerSchema,
   name: z.string().trim().min(1, "Nome obrigatório").max(LIMITS.stockNameMax, "Nome muito longo"),
+  tabId: z.coerce.number().int().positive("Aba inválida"),
+});
+
+const tabName = z.string().trim().min(1, "Dê um nome à aba").max(40, "Nome da aba muito longo");
+const tabColor = z.enum(TAB_COLORS, { message: "Cor inválida" });
+
+export const tabCreateSchema = z.object({
+  name: tabName,
+  assetType: z.enum(ASSET_TYPE_IDS as [string, ...string[]], { message: "Tipo de ativo inválido" }),
+  color: tabColor,
+});
+
+export const tabUpdateSchema = z
+  .object({ name: tabName.optional(), color: tabColor.optional() })
+  .refine((d) => d.name !== undefined || d.color !== undefined, { message: "Nada para alterar" });
+
+export const tabReorderSchema = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1).max(50),
 });
 
 export const transactionSchema = z.object({
