@@ -16,6 +16,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.4.0] - 2026-11-14
+
+Self-hosting kit: run the app 24/7 on a personal Mac, private and without paid cloud.
+
+### Added
+- `docs/SELF_HOSTING.md`: step-by-step guide for macOS (dedicated non-admin service user, LaunchDaemons, private HTTPS via `tailscale serve`, closing sign-ups, update, rollback, restore and uninstall).
+- `deploy/macos/` LaunchDaemon templates for the app (start at boot, restart on failure) and a daily backup at 03:45.
+- `npm run backup`: online SQLite backup (safe while the app runs), integrity check, owner-only permissions and retention (`BACKUP_DIR`, `BACKUP_RETAIN`).
+- Backup tests (24 tests in total).
+- `engines.node >= 22` in `package.json`.
+
+### Fixed
+- Backup files are self-contained (journal mode switched to DELETE), so no `-wal`/`-shm` leftovers accumulate in the backup folder.
+
+
 ## [0.3.0] - 2026-11-14
 
 Security hardening release, based on an AppSec audit of v0.2.0.

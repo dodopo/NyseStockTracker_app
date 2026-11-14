@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon template: runs the app as a dedicated, non-admin user,
+  starts at boot and restarts it if it stops.
+  Replace __SERVICE_USER__ and __HOME__ (e.g. nysetracker and /Users/nysetracker).
+  Install: see docs/SELF_HOSTING.md
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>local.nysetracker.app</string>
+	<key>UserName</key><string>__SERVICE_USER__</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>10</integer>
+	<key>WorkingDirectory</key><string>__HOME__/app</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key><string>__HOME__</string>
+		<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/env</string>
+		<string>npm</string>
+		<string>start</string>
+	</array>
+	<key>StandardOutPath</key><string>__HOME__/logs/app.log</string>
+	<key>StandardErrorPath</key><string>__HOME__/logs/app.log</string>
+</dict>
+</plist>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon template: daily database backup (npm run backup) at 03:45.
+  Replace __SERVICE_USER__ and __HOME__ (e.g. nysetracker and /Users/nysetracker).
+  Install: see docs/SELF_HOSTING.md
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>local.nysetracker.backup</string>
+	<key>UserName</key><string>__SERVICE_USER__</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key><integer>3</integer>
+		<key>Minute</key><integer>45</integer>
+	</dict>
+	<key>WorkingDirectory</key><string>__HOME__/app</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key><string>__HOME__</string>
+		<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/env</string>
+		<string>npm</string>
+		<string>run</string>
+		<string>backup</string>
+	</array>
+	<key>StandardOutPath</key><string>__HOME__/logs/backup.log</string>
+	<key>StandardErrorPath</key><string>__HOME__/logs/backup.log</string>
+</dict>
+</plist>

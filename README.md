@@ -121,6 +121,20 @@ npm start
 
 `npm start` sobe o servidor em modo produção (`NODE_ENV=production`), servindo o front já compilado em `dist/`.
 
+### Servidor pessoal (self-hosting)
+
+Para rodar 24h num Mac em casa, com usuário de serviço dedicado, início automático, backup diário
+e acesso privado via Tailscale, siga o guia [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+
+### Backup do banco
+
+```bash
+npm run backup
+```
+
+Faz uma cópia online do `portfolio.db` (pode rodar com o app ligado), confere a integridade e
+mantém as 30 mais recentes (`BACKUP_DIR`, `BACKUP_RETAIN`).
+
 ### Testes
 
 ```bash
@@ -144,6 +158,9 @@ Verifica os tipos do TypeScript.
 | `server/db.ts` | Abertura do SQLite e migrações versionadas (`PRAGMA user_version`) |
 | `server/validation.ts` | Validações puras de entrada e regras da carteira |
 | `server/app.ts` | `createApp()`: rotas da API, autenticação e middlewares |
+| `server/backup.ts` | Backup online do SQLite com checagem de integridade e retenção |
+| `scripts/backup.ts` | Comando `npm run backup` |
+| `deploy/macos/` | Modelos de LaunchDaemon (app e backup diário) |
 
 ## ⏪ Versões e rollback
 
