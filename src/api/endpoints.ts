@@ -1,5 +1,6 @@
 import { api } from "./client";
-import type { AuthUser, BackupFileData, CandlesResponse, Stock, StockStats, Transaction } from "../types";
+import type { AuthUser, BackupFileData, CandlesResponse, Stock, StockStats, Tab, Transaction } from "../types";
+import type { AssetType } from "../../shared/assetTypes";
 
 type UserResponse = { success: boolean; user: AuthUser };
 
@@ -41,7 +42,8 @@ export const accountApi = {
 
 export const portfolioApi = {
   stocks: () => api<Stock[]>("/api/stocks"),
-  addStock: (stock: Stock) => api("/api/stocks", { method: "POST", body: stock }),
+  addStock: (stock: { ticker: string; name: string; tabId: number }) =>
+    api("/api/stocks", { method: "POST", body: stock }),
   deleteStock: (ticker: string) =>
     api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE" }),
   transactions: () => api<Transaction[]>("/api/transactions?order=desc"),
@@ -62,4 +64,15 @@ export const marketApi = {
       `/api/candles?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}`
     ),
   stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
+};
+
+export const tabsApi = {
+  list: () => api<Tab[]>("/api/tabs"),
+  create: (tab: { name: string; assetType: AssetType; color: string }) =>
+    api<Tab>("/api/tabs", { method: "POST", body: tab }),
+  update: (id: number, changes: { name?: string; color?: string }) =>
+    api<Tab>(`/api/tabs/${id}`, { method: "PATCH", body: changes }),
+  reorder: (ids: number[]) => api<Tab[]>("/api/tabs/reorder", { method: "POST", body: { ids } }),
+  remove: (id: number, moveTo?: number) =>
+    api(`/api/tabs/${id}${moveTo ? `?moveTo=${moveTo}` : ""}`, { method: "DELETE" }),
 };

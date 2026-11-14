@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { History, LayoutDashboard, LogOut, RefreshCw, Settings, TrendingUp } from "lucide-react";
+import { LayoutDashboard, LogOut, Plus, RefreshCw, Settings, TrendingUp } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { FullScreenSpinner, TabButton } from "./components/ui";
 import { AuthScreen } from "./features/auth/AuthScreen";
@@ -24,21 +24,32 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<ConsolidationMode>("SEPARATED");
 
-  const { stocks, ready: portfolioReady } = portfolio;
-  const selectedTicker = route.tab === "acoes" ? route.ticker : null;
+  const { stocks, tabs, ready: portfolioReady } = portfolio;
+  const activeTab = route.tab === "aba" ? tabs.find((t) => t.id === route.tabId) ?? null : null;
+  const selectedTicker = route.tab === "aba" ? route.ticker : null;
 
-  // On the assets tab, always show a valid asset: the one in the URL, or the first one.
+  // On a tab, always show a valid tab and asset: the ones in the URL, or sensible defaults.
+  // Also resolves legacy links (#/acoes/AAPL) to the asset's tab.
   useEffect(() => {
-    if (route.tab !== "acoes" || !portfolioReady) return;
-    const exists = stocks.some((s) => s.ticker === route.ticker);
-    if (!exists) {
-      navigate({ tab: "acoes", ticker: stocks[0]?.ticker ?? null }, { replace: true });
+    if (route.tab !== "aba" || !portfolioReady || tabs.length === 0) return;
+    const fromTicker = route.ticker ? stocks.find((s) => s.ticker === route.ticker) : undefined;
+    const tab =
+      tabs.find((t) => t.id === route.tabId) ??
+      tabs.find((t) => t.id === fromTicker?.tab_id) ??
+      tabs[0];
+    const inTab = stocks.filter((s) => s.tab_id === tab.id);
+    const ticker = inTab.some((s) => s.ticker === route.ticker) ? route.ticker : inTab[0]?.ticker ?? null;
+    if (tab.id !== route.tabId || ticker !== route.ticker) {
+      navigate({ tab: "aba", tabId: tab.id, ticker }, { replace: true });
     }
-  }, [route, stocks, portfolioReady, navigate]);
+  }, [route, tabs, stocks, portfolioReady, navigate]);
+
+  const openTab = useCallback((tabId: number) => navigate({ tab: "aba", tabId, ticker: null }), [navigate]);
 
   const openAsset = useCallback(
-    (ticker: string | null) => navigate({ tab: "acoes", ticker }),
-    [navigate]
+    (ticker: string | null, tabId?: number | null) =>
+      navigate({ tab: "aba", tabId: tabId ?? (route.tab === "aba" ? route.tabId : null), ticker }),
+    [navigate, route]
   );
 
   const logout = useCallback(async () => {
@@ -78,6 +89,7 @@ export default function App() {
       <SettingsModal
         open={settingsOpen}
         user={user}
+        portfolio={portfolio}
         onClose={() => setSettingsOpen(false)}
         onRestored={onRestored}
         onUserChanged={auth.setUser}
@@ -138,37 +150,53 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="px-6 border-b border-tv-border flex overflow-x-auto no-scrollbar" aria-label="Seções">
+      <nav className="px-2 sm:px-6 border-b border-tv-border flex overflow-x-auto no-scrollbar" aria-label="Seções">
         <TabButton
           active={route.tab === "consolidado"}
           onClick={() => navigate({ tab: "consolidado" })}
           icon={LayoutDashboard}
           label="CONSOLIDADO"
         />
-        <TabButton
-          active={route.tab === "acoes"}
-          onClick={() => openAsset(selectedTicker)}
-          icon={History}
-          label="AÇÕES"
-        />
+        {tabs.map((tab) => (
+          <TabButton
+            key={tab.id}
+            active={route.tab === "aba" && activeTab?.id === tab.id}
+            onClick={() => openTab(tab.id)}
+            color={tab.color}
+            label={tab.name.toUpperCase()}
+          />
+        ))}
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="flex items-center gap-1 px-3 py-3 text-tv-text/40 hover:text-tv-text hover:bg-white/5 transition-all"
+          title="Nova aba (Configurações → Abas)"
+          aria-label="Nova aba"
+        >
+          <Plus size={16} />
+        </button>
       </nav>
 
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         <AnimatePresence mode="wait">
           <motion.div
-            key={route.tab}
+            key={route.tab === "aba" ? `aba-${route.tabId}` : route.tab}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {route.tab === "acoes" ? (
+            {route.tab === "aba" ? (
+              activeTab ? (
               <ActionsDashboard
+                key={activeTab.id}
+                tab={activeTab}
                 portfolio={portfolio}
                 selectedTicker={selectedTicker}
                 onSelect={openAsset}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
+              ) : null
             ) : (
               <ConsolidatedDashboard
                 portfolio={portfolio}

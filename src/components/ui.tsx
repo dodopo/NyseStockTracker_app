@@ -1,4 +1,4 @@
-import React, { useId, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { Eye, EyeOff, type LucideIcon } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -32,26 +32,37 @@ export function TabButton({
   active,
   onClick,
   icon: Icon,
+  color,
   label,
 }: {
   active: boolean;
   onClick: () => void;
-  icon: LucideIcon;
+  /** An icon, or a color dot for user-defined tabs. */
+  icon?: LucideIcon;
+  color?: string;
   label: string;
 }) {
+  // On narrow screens the tab bar scrolls sideways: keep the active tab in view.
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [active]);
+
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center gap-2 px-4 py-3 border-b-2 transition-all",
+        "flex items-center gap-2 px-3 sm:px-4 py-3 border-b-2 shrink-0 transition-all whitespace-nowrap",
         active
           ? "border-tv-accent text-tv-accent bg-tv-accent/5"
           : "border-transparent text-tv-text/60 hover:text-tv-text hover:bg-white/5"
       )}
     >
-      <Icon size={18} />
+      {Icon && <Icon size={18} className="hidden sm:block" />}
+      {color && <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} aria-hidden="true" />}
       <span className="font-medium">{label}</span>
     </button>
   );

@@ -1,4 +1,5 @@
 import { api } from "../api/client";
+import { displaySymbol, type AssetType } from "../../shared/assetTypes";
 
 export interface StockPrice {
   ticker: string;
@@ -52,17 +53,24 @@ export async function fetchQuotes(symbols: string[]): Promise<StockPrice[]> {
   }
 }
 
-/** First Finnhub match for a ticker or company name, or null. */
-export async function searchStock(query: string): Promise<{ ticker: string; name: string } | null> {
-  const data = await api<{ result?: Array<{ symbol?: string; description?: string }> }>(
-    `/api/search?q=${encodeURIComponent(query)}`
+export type SearchHit = { ticker: string; name: string; displaySymbol: string };
+
+/**
+ * Up to 5 matches. US stocks: Finnhub search. Crypto: Massive reference data (USD pairs).
+ * Throws ApiError (e.g. MASSIVE_KEY_MISSING) so the screen can explain what to do.
+ */
+export async function searchAssets(query: string, assetType: AssetType): Promise<SearchHit[]> {
+  const typeParam = assetType === "crypto" ? "&type=crypto" : "";
+  const data = await api<{ result?: Array<{ symbol?: string; description?: string; displaySymbol?: string; type?: string }> }>(
+    `/api/search?q=${encodeURIComponent(query)}${typeParam}`
   );
-  const first = data?.result?.[0];
-  if (!first) return null;
-  return {
-    ticker: String(first.symbol || "").toUpperCase(),
-    name: String(first.description || "").trim(),
-  };
+  return (data?.result ?? [])
+    .filter((r) => r.symbol)
+    .slice(0, 5)
+    .map((r) => {
+      const ticker = String(r.symbol).toUpperCase();
+      return { ticker, name: String(r.description || ticker).trim(), displaySymbol: displaySymbol(ticker) };
+    });
 }
 
 export function pricesToMap(prices: StockPrice[]): Record<string, StockPrice> {

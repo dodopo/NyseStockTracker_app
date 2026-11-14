@@ -5,6 +5,7 @@ import { cn, formatCurrency, formatPrice, formatQuantity } from "../../lib/utils
 import type { PortfolioState } from "../../hooks/usePortfolio";
 import type { ConsolidationMode, PortfolioItem } from "../../types";
 import { calculatePosition } from "../../../shared/positions";
+import { displaySymbol } from "../../../shared/assetTypes";
 
 export function ConsolidatedDashboard({
   portfolio,
@@ -15,9 +16,9 @@ export function ConsolidatedDashboard({
   portfolio: PortfolioState;
   mode: ConsolidationMode;
   onModeChange: (mode: ConsolidationMode) => void;
-  onOpenAsset: (ticker: string) => void;
+  onOpenAsset: (ticker: string, tabId: number | null) => void;
 }) {
-  const { stocks, transactions, prices } = portfolio;
+  const { stocks, transactions, prices, tabs } = portfolio;
 
   const rows: PortfolioItem[] = useMemo(
     () =>
@@ -30,6 +31,7 @@ export function ConsolidatedDashboard({
         return {
           ticker: s.ticker,
           name: s.name,
+          tabId: s.tab_id ?? null,
           quantity: p.quantity,
           shares: p.shares,
           avgCost: p.avgCost,
@@ -60,6 +62,15 @@ export function ConsolidatedDashboard({
     [rows]
   );
   const totalPct = totals.invested > 0 ? (totals.total / totals.invested) * 100 : 0;
+
+  // One section per tab, in the user's tab order; assets without a tab go last.
+  const sections = useMemo(() => {
+    const byTab = tabs
+      .map((tab) => ({ tab, items: rows.filter((r) => r.tabId === tab.id) }))
+      .filter((sec) => sec.items.length > 0);
+    const orphans = rows.filter((r) => !tabs.some((t) => t.id === r.tabId));
+    return orphans.length ? [...byTab, { tab: null, items: orphans }] : byTab;
+  }, [tabs, rows]);
 
   const modeToggle = (
     <div className="flex items-center gap-3">
@@ -157,50 +168,72 @@ export function ConsolidatedDashboard({
             </thead>
 
             <tbody className="text-sm font-mono">
-              {rows.map((it) => (
-                <tr
-                  key={it.ticker}
-                  tabIndex={0}
-                  role="link"
-                  aria-label={`Abrir ${it.ticker} na aba Ações`}
-                  title={`Abrir ${it.ticker} na aba Ações`}
-                  onClick={() => onOpenAsset(it.ticker)}
-                  onKeyDown={(e) => e.key === "Enter" && onOpenAsset(it.ticker)}
-                  className="group border-b border-tv-border/50 hover:bg-white/5 cursor-pointer transition-colors focus:outline-none focus:bg-white/5 focus:ring-2 focus:ring-inset focus:ring-tv-accent/40"
-                >
-                  <td className="py-4 pl-2 font-bold">
-                    <div className="flex items-center gap-1">
-                      {it.ticker}
-                      <ChevronRight
-                        size={14}
-                        className="text-tv-accent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity"
-                      />
-                    </div>
-                    <div className="text-[10px] text-tv-text/40 font-normal">{it.name}</div>
-                  </td>
-                  <td className="py-4">{formatPrice(it.currentPrice)}</td>
-                  <td className="py-4 text-tv-text/60">{formatPrice(it.avgCost)}</td>
-                  <td className="py-4">{formatQuantity(it.quantity)}</td>
-                  <td className="py-4 font-bold">{formatCurrency(it.marketValue)}</td>
-                  <td className="py-4 text-tv-text/60">{formatCurrency(it.totalInvested)}</td>
-                  {mode === "SEPARATED" && (
-                    <>
-                      <td className={cn("py-4", it.realizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
-                        {formatCurrency(it.realizedPnL)}
+              {sections.map(({ tab, items }) => {
+                const market = items.reduce((sum, it) => sum + it.marketValue, 0);
+                const pnl = items.reduce((sum, it) => sum + it.totalPnL, 0);
+                return (
+                  <React.Fragment key={tab?.id ?? "sem-aba"}>
+                    <tr className="bg-white/[0.03]">
+                      <td colSpan={mode === "SEPARATED" ? 9 : 7} className="py-2 pl-2 pr-2 font-sans">
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <span className="flex items-center gap-2 font-semibold uppercase tracking-wider text-tv-text/70">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: tab?.color ?? "#78909c" }} />
+                            {tab?.name ?? "Sem aba"}
+                          </span>
+                          <span className="font-mono text-tv-text/60">
+                            {formatCurrency(market)} ·{" "}
+                            <span className={pnl >= 0 ? "text-tv-up" : "text-tv-down"}>{formatCurrency(pnl)}</span>
+                          </span>
+                        </div>
                       </td>
-                      <td className={cn("py-4", it.unrealizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
-                        {formatCurrency(it.unrealizedPnL)}
-                      </td>
-                    </>
-                  )}
-                  {pnlCell(it.totalPnL, it.totalPnLPct)}
-                </tr>
-              ))}
+                    </tr>
+                    {items.map((it) => (
+                      <tr
+                        key={it.ticker}
+                        tabIndex={0}
+                        role="link"
+                        aria-label={`Abrir ${displaySymbol(it.ticker)} na aba ${tab?.name ?? ""}`}
+                        title={`Abrir ${displaySymbol(it.ticker)}`}
+                        onClick={() => onOpenAsset(it.ticker, it.tabId)}
+                        onKeyDown={(e) => e.key === "Enter" && onOpenAsset(it.ticker, it.tabId)}
+                        className="group border-b border-tv-border/50 hover:bg-white/5 cursor-pointer transition-colors focus:outline-none focus:bg-white/5 focus:ring-2 focus:ring-inset focus:ring-tv-accent/40"
+                      >
+                        <td className="py-4 pl-2 font-bold">
+                          <div className="flex items-center gap-1">
+                            {displaySymbol(it.ticker)}
+                            <ChevronRight
+                              size={14}
+                              className="text-tv-accent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity"
+                            />
+                          </div>
+                          <div className="text-[10px] text-tv-text/40 font-normal">{it.name}</div>
+                        </td>
+                        <td className="py-4">{formatPrice(it.currentPrice)}</td>
+                        <td className="py-4 text-tv-text/60">{formatPrice(it.avgCost)}</td>
+                        <td className="py-4">{formatQuantity(it.quantity)}</td>
+                        <td className="py-4 font-bold">{formatCurrency(it.marketValue)}</td>
+                        <td className="py-4 text-tv-text/60">{formatCurrency(it.totalInvested)}</td>
+                        {mode === "SEPARATED" && (
+                          <>
+                            <td className={cn("py-4", it.realizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
+                              {formatCurrency(it.realizedPnL)}
+                            </td>
+                            <td className={cn("py-4", it.unrealizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
+                              {formatCurrency(it.unrealizedPnL)}
+                            </td>
+                          </>
+                        )}
+                        {pnlCell(it.totalPnL, it.totalPnLPct)}
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                );
+              })}
 
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={mode === "SEPARATED" ? 9 : 7} className="py-12 text-center text-tv-text/20 italic">
-                    Adicione ações e transações para ver o consolidado
+                    Adicione ativos e transações para ver o consolidado
                   </td>
                 </tr>
               )}

@@ -2,12 +2,13 @@ import React, { Suspense, lazy, useId, useMemo, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, History, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { format } from "date-fns";
-import { errorMessage } from "../../api/client";
+import { ApiError, errorMessage } from "../../api/client";
 import { Card, ErrorMessage, FieldLabel } from "../../components/ui";
 import { cn, formatCurrency, formatPercent, formatPrice, formatQuantity } from "../../lib/utils";
-import { searchStock } from "../../services/marketService";
+import { searchAssets, type SearchHit } from "../../services/marketService";
 import type { PortfolioState } from "../../hooks/usePortfolio";
-import type { Stock, TransactionType } from "../../types";
+import type { Stock, Tab, TransactionType } from "../../types";
+import { ASSET_TYPES, displaySymbol, type AssetType } from "../../../shared/assetTypes";
 import { calculatePosition } from "../../../shared/positions";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
 import { compareTransactions } from "../../../shared/validation";
@@ -16,24 +17,33 @@ const PriceChart = lazy(() => import("../chart/PriceChart").then((m) => ({ defau
 import { StatsCard } from "../chart/StatsCard";
 
 export function ActionsDashboard({
+  tab,
   portfolio,
   selectedTicker,
   onSelect,
   onOpenSettings,
 }: {
+  tab: Tab;
   portfolio: PortfolioState;
   selectedTicker: string | null;
   onSelect: (ticker: string | null) => void;
   onOpenSettings: () => void;
 }) {
-  const { stocks, transactions, prices } = portfolio;
+  const { transactions, prices } = portfolio;
+  const stocks = portfolio.stocks.filter((s) => s.tab_id === tab.id);
   const currentStock = stocks.find((s) => s.ticker === selectedTicker) ?? null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="space-y-6">
-        <AddStockCard portfolio={portfolio} onAdded={onSelect} />
-        <StockListCard portfolio={portfolio} selectedTicker={selectedTicker} onSelect={onSelect} />
+        <AddStockCard key={tab.id} tab={tab} portfolio={portfolio} onAdded={onSelect} onOpenSettings={onOpenSettings} />
+        <StockListCard
+          tab={tab}
+          stocks={stocks}
+          portfolio={portfolio}
+          selectedTicker={selectedTicker}
+          onSelect={onSelect}
+        />
       </div>
 
       <div className="lg:col-span-2 space-y-6">
@@ -49,7 +59,9 @@ export function ActionsDashboard({
         ) : (
           <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-tv-text/20 space-y-4">
             <History size={64} />
-            <p className="text-xl font-medium">Selecione uma ação para ver detalhes</p>
+            <p className="text-xl font-medium">
+              {stocks.length ? "Selecione um ativo para ver detalhes" : `${ASSET_TYPES[tab.assetType].addTitle} para começar`}
+            </p>
           </div>
         )}
       </div>
@@ -57,11 +69,23 @@ export function ActionsDashboard({
   );
 }
 
-function AddStockCard({ portfolio, onAdded }: { portfolio: PortfolioState; onAdded: (ticker: string) => void }) {
+function AddStockCard({
+  tab,
+  portfolio,
+  onAdded,
+  onOpenSettings,
+}: {
+  tab: Tab;
+  portfolio: PortfolioState;
+  onAdded: (ticker: string) => void;
+  onOpenSettings: () => void;
+}) {
+  const type = ASSET_TYPES[tab.assetType];
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const [found, setFound] = useState<Stock | null>(null);
+  const [hits, setHits] = useState<SearchHit[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [missingKey, setMissingKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const search = async () => {
@@ -70,39 +94,40 @@ function AddStockCard({ portfolio, onAdded }: { portfolio: PortfolioState; onAdd
     setSearching(true);
     setError(null);
     setMessage(null);
-    setFound(null);
+    setMissingKey(false);
+    setHits([]);
     try {
-      const result = await searchStock(q);
-      if (!result) setMessage(`Nenhum ativo encontrado para "${q}".`);
-      else setFound(result);
+      const result = await searchAssets(q, tab.assetType);
+      if (!result.length) setMessage(`Nenhum ativo encontrado para "${q}".`);
+      else setHits(result);
     } catch (err) {
+      setMissingKey(err instanceof ApiError && err.code === "MASSIVE_KEY_MISSING");
       setMessage(errorMessage(err, "Erro ao buscar ativo. Tente novamente."));
     } finally {
       setSearching(false);
     }
   };
 
-  const add = async () => {
-    if (!found) return;
+  const add = async (hit: SearchHit) => {
     setError(null);
     try {
-      await portfolio.addStock(found);
-      onAdded(found.ticker);
-      setFound(null);
+      await portfolio.addStock({ ticker: hit.ticker, name: hit.name, tabId: tab.id });
+      onAdded(hit.ticker);
+      setHits([]);
       setQuery("");
       setMessage(null);
     } catch (err) {
-      setError(errorMessage(err, "Erro ao adicionar ação"));
+      setError(errorMessage(err, "Erro ao adicionar ativo"));
     }
   };
 
   return (
-    <Card title="Adicionar Ação">
+    <Card title={type.addTitle}>
       <div className="flex gap-2">
         <input
           type="text"
-          placeholder="Ticker ou Nome (ex: AAPL)"
-          aria-label="Buscar ação por ticker ou nome"
+          placeholder={type.searchPlaceholder}
+          aria-label={type.searchPlaceholder}
           className="tv-input flex-1 min-w-0"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -114,25 +139,30 @@ function AddStockCard({ portfolio, onAdded }: { portfolio: PortfolioState; onAdd
       </div>
 
       {message && (
-        <div className="mt-3 text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded p-2">
-          {message}
+        <div className="mt-3 text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded p-2 space-y-2">
+          <div>{message}</div>
+          {missingKey && (
+            <button type="button" onClick={onOpenSettings} className="underline hover:no-underline">
+              Abrir Configurações
+            </button>
+          )}
         </div>
       )}
 
-      {found && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-4 p-3 bg-white/5 rounded border border-white/10 flex justify-between items-center"
-        >
-          <div>
-            <div className="font-bold text-tv-accent">{found.ticker}</div>
-            <div className="text-xs text-tv-text/60">{found.name}</div>
-          </div>
-          <button type="button" onClick={add} className="tv-btn py-1 px-3 text-sm">
-            Adicionar
-          </button>
-        </motion.div>
+      {hits.length > 0 && (
+        <motion.ul initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4 space-y-2">
+          {hits.map((hit) => (
+            <li key={hit.ticker} className="p-3 bg-white/5 rounded border border-white/10 flex justify-between items-center gap-3">
+              <div className="min-w-0">
+                <div className="font-bold text-tv-accent">{hit.displaySymbol}</div>
+                <div className="text-xs text-tv-text/60 truncate">{hit.name}</div>
+              </div>
+              <button type="button" onClick={() => void add(hit)} className="tv-btn py-1 px-3 text-sm shrink-0">
+                Adicionar
+              </button>
+            </li>
+          ))}
+        </motion.ul>
       )}
 
       {error && <div className="mt-3"><ErrorMessage>{error}</ErrorMessage></div>}
@@ -141,18 +171,22 @@ function AddStockCard({ portfolio, onAdded }: { portfolio: PortfolioState; onAdd
 }
 
 function StockListCard({
+  tab,
+  stocks,
   portfolio,
   selectedTicker,
   onSelect,
 }: {
+  tab: Tab;
+  stocks: Stock[];
   portfolio: PortfolioState;
   selectedTicker: string | null;
   onSelect: (ticker: string | null) => void;
 }) {
-  const { stocks } = portfolio;
+  const type = ASSET_TYPES[tab.assetType];
 
   const remove = async (ticker: string) => {
-    if (!window.confirm(`Excluir ${ticker} e todas as transações dele?`)) return;
+    if (!window.confirm(`Excluir ${displaySymbol(ticker)} e todas as transações dele?`)) return;
     try {
       await portfolio.deleteStock(ticker);
       if (selectedTicker === ticker) {
@@ -164,7 +198,7 @@ function StockListCard({
   };
 
   return (
-    <Card title="Minhas Ações">
+    <Card title={type.listTitle}>
       <ul className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
         {stocks.map((stock) => (
           <li key={stock.ticker}>
@@ -182,7 +216,7 @@ function StockListCard({
               )}
             >
               <div>
-                <div className="font-bold">{stock.ticker}</div>
+                <div className="font-bold">{displaySymbol(stock.ticker)}</div>
                 <div className="text-xs text-tv-text/60 truncate max-w-[150px]">{stock.name}</div>
               </div>
               <button
@@ -192,8 +226,8 @@ function StockListCard({
                   void remove(stock.ticker);
                 }}
                 className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-tv-down hover:scale-110 transition-all"
-                title={`Excluir ${stock.ticker}`}
-                aria-label={`Excluir ${stock.ticker}`}
+                title={`Excluir ${displaySymbol(stock.ticker)}`}
+                aria-label={`Excluir ${displaySymbol(stock.ticker)}`}
               >
                 <Trash2 size={16} />
               </button>
@@ -201,11 +235,15 @@ function StockListCard({
           </li>
         ))}
         {stocks.length === 0 && (
-          <li className="text-center py-8 text-tv-text/40 italic">Nenhuma ação adicionada</li>
+          <li className="text-center py-8 text-tv-text/40 italic">{type.emptyList}</li>
         )}
       </ul>
     </Card>
   );
+}
+
+function assetTypeOf(stock: Stock): AssetType {
+  return stock.asset_type ?? (stock.ticker.startsWith("X:") ? "crypto" : "us_stock");
 }
 
 function StockDetail({
@@ -238,7 +276,7 @@ function StockDetail({
     <>
       <div className="flex justify-between items-end">
         <div>
-          <h2 className="text-3xl font-bold">{stock.ticker}</h2>
+          <h2 className="text-3xl font-bold">{displaySymbol(stock.ticker)}</h2>
           <p className="text-tv-text/60">{stock.name}</p>
         </div>
         <div className="text-right">
@@ -262,6 +300,7 @@ function StockDetail({
       >
         <PriceChart
           symbol={stock.ticker}
+          assetType={assetTypeOf(stock)}
           transactions={transactions}
           avgCost={position.avgCost}
           hasPosition={position.shares > 0}
@@ -287,7 +326,7 @@ function StockDetail({
         </Card>
       </div>
 
-      <StatsCard symbol={stock.ticker} currentPrice={currentPrice} />
+      <StatsCard symbol={stock.ticker} currentPrice={currentPrice} assetType={assetTypeOf(stock)} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <TransactionForm ticker={stock.ticker} portfolio={portfolio} />
