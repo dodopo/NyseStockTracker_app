@@ -48,8 +48,14 @@ as_service() {
   fi
 }
 
+# Version reported by /api/health; "legacy" for v0.4.x (no /api/health, but alive); empty if down.
 running_version() {
-  curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
+  v="$(curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  if [ -n "$v" ]; then
+    printf '%s' "$v"
+  elif curl -fsS -m 3 "http://127.0.0.1:$PORT/api/auth/me" >/dev/null 2>&1; then
+    printf 'legacy'
+  fi
 }
 
 # Waits until /api/health reports version $1 ("v" alone = any healthy version,

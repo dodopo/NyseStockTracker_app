@@ -16,6 +16,37 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.5.0] - 2026-11-14
+
+Foundation release: modular code, exact decimals (ready for crypto), safer operations.
+Database migration v3 is **additive**: rolling back to v0.4.x keeps working on the same database
+without restoring a backup. Upgrading a v0.4.x server: see "Primeira atualização vindo da v0.4.x"
+in `docs/SELF_HOSTING.md` (installs the update command and applies `Umask 077`).
+
+### Added
+- Clickable rows in the consolidated table (mouse and Enter) open the asset in the Ações tab.
+- URL routes per screen (`#/consolidado`, `#/acoes/AAPL`): browser back button and bookmarks work.
+- Show/hide toggle on every password field, placed beside the input so it never covers password-manager icons.
+- Delete your own account (Settings → danger zone): requires the password and the e-mail typed again; deletes the whole portfolio.
+- `scripts/update.sh` (`nysetracker-update vX.Y.Z`): backup, install, build and tests before touching the service, restart, health check, automatic rollback on any failure; refuses tags that were altered upstream.
+- `GET /api/health` with the running version.
+- GitHub Actions CI: lint, tests, build and `npm audit` on Node 22, 24 and 26 (read-only permissions, actions pinned to commit SHAs).
+- `allowScripts` in `package.json`: only reviewed packages (pinned versions) may run install scripts.
+- Tests: 38 (exact decimals, average-price calculation, shared schemas, migration v3, rollback compatibility, delete account, health).
+
+### Changed
+- Exact decimals: quantities and prices are stored and transported as decimal strings with up to 8 places (1 satoshi), and the average price / P&L are computed with `big.js`. No more floating-point drift (0.1 + 0.2 − 0.3 = 0).
+- `src/App.tsx` (1,773 lines) split into `features/`, `hooks/`, `api/` and `components/`. Screens are no longer defined inside `App`, which remounted them (and lost typed input) on every render.
+- Validation rules live in `shared/` and run identically in the browser (early feedback) and on the server (authoritative), with zod.
+- Single API client: every call checks the HTTP status and shows the server's message.
+- TypeScript `strict` mode on; the React type definitions were missing and are now installed.
+- Fonts are self-hosted (latin subsets); the browser no longer contacts Google on each visit, and the CSP no longer allows Google domains.
+- LaunchDaemon templates use `Umask 077`: database, backups and logs are created owner-only.
+
+### Fixed
+- Error message wording for invalid quantities/prices.
+
+
 ## [0.4.1] - 2026-11-14
 
 ### Fixed

@@ -57,7 +57,7 @@ Sempre a partir de uma tag (veja as Releases), nunca da `main` em andamento:
 
 ```bash
 sudo -u nysetracker -H sh -c 'cd /Users/nysetracker && git clone https://github.com/dodopo/NyseStockTracker_app.git app'
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet v0.4.1 && npm ci && npm run build && npm test'
+sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet v0.5.0 && npm ci && npm run build && npm test'
 ```
 
 Os comandos usam `sh -c 'cd ...'` porque o usuário de serviço não consegue entrar na pasta de
@@ -133,15 +133,92 @@ A tela de login deixa de mostrar a aba **CRIAR CONTA**.
 
 ## Atualizar para uma nova versão
 
+A atualização é **manual de propósito**: nada chega sozinho do GitHub ao servidor. Leia o
+`CHANGELOG.md` da versão nova antes; versões com migração de banco avisam no topo.
+
+### Comando de atualização (recomendado, a partir da v0.5.0)
+
+Instale o comando uma vez, numa cópia **do root**:
+
+```bash
+sudo mkdir -p /usr/local/sbin
+sudo sh -c 'install -o root -g wheel -m 755 /Users/nysetracker/app/scripts/update.sh /usr/local/sbin/nysetracker-update'
+```
+
+Por que uma cópia do root: o arquivo dentro de `app/` pertence ao usuário de serviço. Rodar com
+`sudo` um arquivo que o serviço pode alterar daria a um app comprometido um caminho para virar
+administrador. Quando uma versão nova mudar o `scripts/update.sh`, revise a mudança e reinstale
+a cópia com o mesmo comando.
+
+Para atualizar:
+
+```bash
+sudo /usr/local/sbin/nysetracker-update vX.Y.Z
+```
+
+O comando, em ordem:
+
+1. confere o formato da versão e se a tag existe. **Se uma tag já publicada tiver sido alterada
+   no GitHub, ele para** (proteção contra conta invadida);
+2. recusa rodar se houver alterações locais na pasta do app;
+3. faz backup do banco;
+4. instala a versão nova, compila e roda os testes **com o app antigo ainda no ar**. Se algo
+   falhar, reinstala a versão anterior e o app nem é reiniciado;
+5. reinicia o serviço e espera `/api/health` responder com a versão nova. Se não responder,
+   reinstala a anterior, reinicia e avisa.
+
+Configurações opcionais (variáveis de ambiente): `NYSE_SERVICE_USER`, `NYSE_APP_DIR`,
+`NYSE_LAUNCHD_LABEL`, `NYSE_PORT` (padrão 3100) e `NYSE_HEALTH_TIMEOUT` (padrão 60 s). Exemplo:
+
+```bash
+sudo NYSE_PORT=3100 /usr/local/sbin/nysetracker-update vX.Y.Z
+```
+
+### Primeira atualização vindo da v0.4.x
+
+A v0.4.x ainda não tem o comando. Instale-o direto da tag `v0.5.0`, sem mexer no app:
+
+```bash
+sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git fetch --tags --quiet && git show v0.5.0:scripts/update.sh' > /tmp/nysetracker-update
+sudo mkdir -p /usr/local/sbin
+sudo install -o root -g wheel -m 755 /tmp/nysetracker-update /usr/local/sbin/nysetracker-update
+rm /tmp/nysetracker-update
+sudo /usr/local/sbin/nysetracker-update v0.5.0
+```
+
+Depois, uma única vez, aplique as permissões fechadas da v0.5.0 (os modelos de serviço passaram a
+usar `Umask 077`):
+
+```bash
+for f in app backup; do
+  sudo launchctl bootout system/local.nysetracker.$f
+  sudo sh -c "sed -e 's|__SERVICE_USER__|nysetracker|g' -e 's|__HOME__|/Users/nysetracker|g' /Users/nysetracker/app/deploy/macos/local.nysetracker.$f.plist > /Library/LaunchDaemons/local.nysetracker.$f.plist"
+  sudo chown root:wheel /Library/LaunchDaemons/local.nysetracker.$f.plist
+  sudo chmod 644 /Library/LaunchDaemons/local.nysetracker.$f.plist
+  sudo launchctl bootstrap system /Library/LaunchDaemons/local.nysetracker.$f.plist
+done
+sudo -u nysetracker -H sh -c 'chmod -R go-rwx /Users/nysetracker/data /Users/nysetracker/logs /Users/nysetracker/app/.env'
+```
+
+### Atualização manual (sem o comando)
+
 ```bash
 sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && npm run backup'
 sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git fetch --tags --quiet && git checkout --quiet vX.Y.Z && npm ci && npm run build && npm test'
 sudo launchctl kickstart -k system/local.nysetracker.app
 ```
 
-Leia o `CHANGELOG.md` antes: versões com migração de banco avisam no topo.
-
 ## Voltar para a versão anterior (rollback)
+
+O jeito mais simples é o próprio comando, apontando para a versão anterior:
+
+```bash
+sudo /usr/local/sbin/nysetracker-update vA.B.C
+```
+
+Voltar da v0.5.x para a v0.4.x **não exige restaurar o banco**: a migração da v0.5.0 só
+acrescenta colunas e continua preenchendo as antigas. Para versões que avisarem o contrário no
+CHANGELOG, faça o rollback manual com o backup tirado **antes** da atualização:
 
 1. Pare o app:
 
@@ -149,8 +226,7 @@ Leia o `CHANGELOG.md` antes: versões com migração de banco avisam no topo.
 sudo launchctl bootout system/local.nysetracker.app
 ```
 
-2. Volte o código para a tag anterior e restaure o backup feito **antes** da atualização
-   (troque os nomes pelos seus):
+2. Volte o código e restaure o backup (troque os nomes pelos seus):
 
 ```bash
 sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet vA.B.C && npm ci && npm run build'
