@@ -57,7 +57,7 @@ Sempre a partir de uma tag (veja as Releases), nunca da `main` em andamento:
 
 ```bash
 sudo -u nysetracker -H sh -c 'cd /Users/nysetracker && git clone https://github.com/dodopo/NyseStockTracker_app.git app'
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet v0.4.0 && npm ci && npm run build && npm test'
+sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet v0.4.1 && npm ci && npm run build && npm test'
 ```
 
 Os comandos usam `sh -c 'cd ...'` porque o usuário de serviço não consegue entrar na pasta de

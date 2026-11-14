@@ -1,7 +1,7 @@
 {
   "name": "nyse-stock-portfolio-tracker-app",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -17,7 +17,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "bcrypt": "^6.0.0",
-    "better-sqlite3": "^12.4.1",
+    "better-sqlite3": "^13.2.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
