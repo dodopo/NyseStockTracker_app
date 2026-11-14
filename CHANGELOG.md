@@ -16,6 +16,24 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.6.0] - 2026-11-14
+
+Account settings: the "Conta" area in Settings is now fully working. No database migration.
+
+### Added
+- **Change password**: requires the current password; signs out every other device (keeps the current session).
+- **Change e-mail**: requires the current password; the new e-mail must be valid and not in use.
+- **Change Finnhub key**: shows the current key masked (last 4 characters) and **tests the new key with Finnhub before saving**, so a mistyped key never replaces a working one.
+- **Sign out of all devices** (ends every session, including the current one).
+- **Account info**: e-mail, name, created at, last login, masked Finnhub key, active sessions and app version.
+- `GET /api/account`, `POST /api/account/password`, `POST /api/account/email`, `POST /api/account/logout-all`.
+- Tests: 46 (8 new for the account flows).
+
+### Changed
+- Saving a Finnhub key (onboarding or settings) now verifies it with one real quote request first; rejected keys return a clear message.
+- Restoring a backup created with another e-mail (for example before an e-mail change) now asks for the current password instead of refusing outright. Backups of other people still require the account owner's password.
+
+
 ## [0.5.0] - 2026-11-14
 
 Foundation release: modular code, exact decimals (ready for crypto), safer operations.

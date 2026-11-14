@@ -1,7 +1,15 @@
-import React, { useEffect, useId, useState } from "react";
-import { Download, KeyRound, Loader2, Lock, Mail, Trash2, Upload, X } from "lucide-react";
-import { authApi, portfolioApi } from "../../api/endpoints";
-import { errorMessage } from "../../api/client";
+import React, { useCallback, useEffect, useId, useState } from "react";
+import { CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
+import { accountApi, authApi, portfolioApi, type AccountInfo } from "../../api/endpoints";
+import { ApiError, errorMessage } from "../../api/client";
+import { cn } from "../../lib/utils";
+import {
+  changeEmailSchema,
+  changePasswordSchema,
+  finnhubKeySchema,
+  firstIssue,
+} from "../../../shared/schemas";
+import { LIMITS, normalizeEmail } from "../../../shared/validation";
 import { Card, ErrorMessage, FieldLabel, PasswordInput } from "../../components/ui";
 import type { AuthUser, BackupFileData } from "../../types";
 
@@ -31,13 +39,17 @@ export function SettingsModal({
   user,
   onClose,
   onRestored,
-  onAccountDeleted,
+  onUserChanged,
+  onSignedOut,
 }: {
   open: boolean;
   user: AuthUser;
   onClose: () => void;
   onRestored: (user: AuthUser) => Promise<void>;
-  onAccountDeleted: () => void;
+  /** The account data changed (e-mail, Finnhub key): refresh the session user. */
+  onUserChanged: (user: AuthUser) => void;
+  /** This browser is no longer signed in (account deleted or logout everywhere). */
+  onSignedOut: () => void;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -76,10 +88,10 @@ export function SettingsModal({
           </div>
 
           <div className="p-6 space-y-6">
+            <AccountCard user={user} onUserChanged={onUserChanged} onSignedOut={onSignedOut} />
             <BackupCard user={user} />
-            <RestoreCard onRestored={onRestored} onClose={onClose} />
-            <AccountCard />
-            <DeleteAccountCard user={user} onDeleted={onAccountDeleted} />
+            <RestoreCard user={user} onRestored={onRestored} onClose={onClose} />
+            <DeleteAccountCard user={user} onDeleted={onSignedOut} />
           </div>
         </Card>
       </div>
@@ -122,9 +134,11 @@ function BackupCard({ user }: { user: AuthUser }) {
 }
 
 function RestoreCard({
+  user,
   onRestored,
   onClose,
 }: {
+  user: AuthUser;
   onRestored: (user: AuthUser) => Promise<void>;
   onClose: () => void;
 }) {
@@ -132,6 +146,8 @@ function RestoreCard({
   const [preview, setPreview] = useState<BackupFileData | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -139,6 +155,8 @@ function RestoreCard({
     setError(null);
     setPreview(null);
     setFileName("");
+    setNeedsPassword(false);
+    setConfirmPassword("");
     if (!file) return;
 
     try {
@@ -149,6 +167,8 @@ function RestoreCard({
       }
       setFileName(file.name);
       setPreview(parsed);
+      // Backup from another e-mail (e.g. before an e-mail change): the server asks for the password.
+      setNeedsPassword(normalizeEmail(parsed.user?.email) !== user.email);
     } catch {
       setError("Não foi possível ler o arquivo de backup.");
     }
@@ -156,6 +176,10 @@ function RestoreCard({
 
   const restore = async () => {
     if (!preview) return;
+    if (needsPassword && !confirmPassword) {
+      setError("Digite a sua senha para restaurar um backup de outro e-mail.");
+      return;
+    }
     const confirmed = window.confirm(
       "Este restore substituirá completamente a carteira atual e as configurações do usuário logado. Deseja continuar?"
     );
@@ -164,7 +188,7 @@ function RestoreCard({
     setRestoring(true);
     setError(null);
     try {
-      const data = await portfolioApi.importBackup(preview);
+      const data = await portfolioApi.importBackup(preview, needsPassword ? confirmPassword : undefined);
       await onRestored(data.user);
       setPreview(null);
       setFileName("");
@@ -172,6 +196,7 @@ function RestoreCard({
       const skippedNote = data.skipped ? ` (${data.skipped} item(ns) inválido(s) ignorado(s))` : "";
       window.alert(`Backup restaurado com sucesso${skippedNote}.`);
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) setNeedsPassword(true);
       setError(errorMessage(err, "Falha ao restaurar backup."));
     } finally {
       setRestoring(false);
@@ -210,6 +235,20 @@ function RestoreCard({
             <div className="text-xs text-yellow-200 mt-2">
               Atenção: o restore substitui completamente a carteira e configurações atuais.
             </div>
+            {needsPassword && (
+              <div className="space-y-2 pt-2">
+                <div className="text-xs text-yellow-200">
+                  Este backup é de outro e-mail ({preview.user?.email || "não informado"}). Se ele for seu, por
+                  exemplo de antes de trocar o e-mail, confirme com a sua senha atual.
+                </div>
+                <PasswordInput
+                  label="Sua senha atual"
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                  autoComplete="current-password"
+                />
+              </div>
+            )}
             <button type="button" onClick={restore} disabled={restoring} className="tv-btn flex items-center gap-2 mt-2">
               {restoring ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
               Restaurar Backup
@@ -223,30 +262,329 @@ function RestoreCard({
   );
 }
 
-function AccountCard() {
-  const soon = [
-    { icon: Lock, label: "Trocar senha" },
-    { icon: Mail, label: "Trocar e-mail" },
-    { icon: KeyRound, label: "Trocar API key" },
+function formatDateTime(value: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString("pt-BR");
+}
+
+function SuccessMessage({ children }: { children: React.ReactNode }) {
+  if (!children) return null;
+  return (
+    <div role="status" className="flex items-center gap-2 text-xs text-tv-up bg-tv-up/10 border border-tv-up/30 rounded p-2">
+      <CheckCircle2 size={14} /> {children}
+    </div>
+  );
+}
+
+type AccountPanel = "password" | "email" | "apikey" | null;
+
+function AccountCard({
+  user,
+  onUserChanged,
+  onSignedOut,
+}: {
+  user: AuthUser;
+  onUserChanged: (user: AuthUser) => void;
+  onSignedOut: () => void;
+}) {
+  const [info, setInfo] = useState<AccountInfo | null>(null);
+  const [panel, setPanel] = useState<AccountPanel>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadInfo = useCallback(async () => {
+    try {
+      setInfo(await accountApi.info());
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível carregar os dados da conta."));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadInfo();
+  }, [loadInfo, user.email, user.updatedAt]);
+
+  const done = (message: string) => {
+    setPanel(null);
+    setError(null);
+    setSuccess(message);
+    void loadInfo();
+  };
+
+  const toggle = (next: Exclude<AccountPanel, null>) => {
+    setSuccess(null);
+    setError(null);
+    setPanel((current) => (current === next ? null : next));
+  };
+
+  const logoutAll = async () => {
+    if (!window.confirm("Encerrar a sessão em TODOS os aparelhos, inclusive este?")) return;
+    try {
+      await accountApi.logoutAll();
+      onSignedOut();
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível encerrar as sessões."));
+    }
+  };
+
+  const buttons = [
+    { id: "password" as const, icon: Lock, label: "Trocar senha" },
+    { id: "email" as const, icon: Mail, label: "Trocar e-mail" },
+    { id: "apikey" as const, icon: KeyRound, label: "Trocar API key" },
   ];
+
   return (
     <Card title="Conta">
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
+        <InfoRow label="E-mail" value={info?.email ?? user.email} />
+        <InfoRow label="Nome" value={info?.displayName || "—"} />
+        <InfoRow label="Conta criada em" value={formatDateTime(info?.createdAt ?? null)} />
+        <InfoRow label="Último acesso" value={formatDateTime(info?.lastLoginAt ?? null)} />
+        <InfoRow label="Chave da Finnhub" value={info?.finnhubKeyHint ?? "—"} mono />
+        <InfoRow label="Sessões ativas" value={info ? String(info.activeSessions) : "—"} />
+        <InfoRow label="Versão do app" value={info ? `v${info.appVersion}` : "—"} mono />
+      </dl>
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {soon.map(({ icon: Icon, label }) => (
+        {buttons.map(({ id, icon: Icon, label }) => (
           <button
-            key={label}
+            key={id}
             type="button"
-            className="flex items-center gap-2 px-3 py-3 rounded border border-white/10 text-sm text-tv-text/50 bg-white/5 cursor-not-allowed"
-            disabled
-            title="Será implementado em etapa futura"
+            onClick={() => toggle(id)}
+            aria-expanded={panel === id}
+            className={cn(
+              "flex items-center gap-2 px-3 py-3 rounded border text-sm transition-all",
+              panel === id
+                ? "border-tv-accent/60 bg-tv-accent/10 text-tv-text"
+                : "border-white/10 text-tv-text/80 hover:bg-white/5"
+            )}
           >
             <Icon size={16} />
             {label}
           </button>
         ))}
       </div>
-      <div className="mt-3 text-xs text-tv-text/40">Esta área foi preparada para futuras configurações da conta.</div>
+
+      {panel && (
+        <div className="mt-4 p-4 rounded border border-white/10 bg-white/[0.02]">
+          {panel === "password" && <ChangePasswordForm onDone={() => done("Senha trocada. Os outros aparelhos foram desconectados.")} />}
+          {panel === "email" && (
+            <ChangeEmailForm
+              onDone={(updated) => {
+                onUserChanged(updated);
+                done(`E-mail trocado para ${updated.email}. Use-o no próximo login.`);
+              }}
+            />
+          )}
+          {panel === "apikey" && (
+            <ChangeApiKeyForm
+              currentHint={info?.finnhubKeyHint ?? null}
+              onDone={(updated) => {
+                onUserChanged(updated);
+                done("Chave da Finnhub testada e salva.");
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-2">
+        <SuccessMessage>{success}</SuccessMessage>
+        <ErrorMessage>{error}</ErrorMessage>
+      </div>
+
+      <div className="mt-4 pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-tv-text/50">Esqueceu o app aberto em algum lugar? Encerre todas as sessões.</p>
+        <button
+          type="button"
+          onClick={() => void logoutAll()}
+          className="flex items-center gap-2 px-3 py-2 rounded border border-white/10 text-sm text-tv-text/80 hover:bg-white/5"
+        >
+          <LogOut size={16} />
+          Sair de todos os aparelhos
+        </button>
+      </div>
     </Card>
+  );
+}
+
+function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex justify-between gap-3 border-b border-white/5 pb-1">
+      <dt className="text-tv-text/50">{label}</dt>
+      <dd className={cn("text-tv-text text-right truncate", mono && "font-mono")}>{value}</dd>
+    </div>
+  );
+}
+
+function ChangePasswordForm({ onDone }: { onDone: () => void }) {
+  const [form, setForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (field: keyof typeof form) => (value: string) => setForm((f) => ({ ...f, [field]: value }));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = changePasswordSchema.safeParse(form);
+    if (!check.success) {
+      setError(firstIssue(check.error));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await accountApi.changePassword(form);
+      onDone();
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível trocar a senha."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <PasswordInput label="Senha atual" value={form.currentPassword} onChange={set("currentPassword")} autoComplete="current-password" />
+      <PasswordInput
+        label="Nova senha"
+        value={form.newPassword}
+        onChange={set("newPassword")}
+        autoComplete="new-password"
+        minLength={LIMITS.passwordMin}
+        placeholder={`Mínimo de ${LIMITS.passwordMin} caracteres`}
+      />
+      <PasswordInput
+        label="Confirmar nova senha"
+        value={form.confirmPassword}
+        onChange={set("confirmPassword")}
+        autoComplete="new-password"
+        minLength={LIMITS.passwordMin}
+      />
+      <p className="text-xs text-tv-text/50">Ao trocar, os outros aparelhos conectados serão desconectados.</p>
+      <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <Lock size={16} />}
+        Salvar nova senha
+      </button>
+      <ErrorMessage>{error}</ErrorMessage>
+    </form>
+  );
+}
+
+function ChangeEmailForm({ onDone }: { onDone: (user: AuthUser) => void }) {
+  const [newEmail, setNewEmail] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const emailId = useId();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = changeEmailSchema.safeParse({ currentPassword, newEmail });
+    if (!check.success) {
+      setError(firstIssue(check.error));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await accountApi.changeEmail(check.data);
+      onDone(data.user);
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível trocar o e-mail."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div className="space-y-1">
+        <FieldLabel htmlFor={emailId}>Novo e-mail</FieldLabel>
+        <input
+          id={emailId}
+          type="email"
+          className="tv-input w-full"
+          value={newEmail}
+          onChange={(e) => setNewEmail(e.target.value)}
+          autoComplete="email"
+          required
+        />
+      </div>
+      <PasswordInput label="Senha atual" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+      <p className="text-xs text-tv-text/50">
+        O novo e-mail passa a ser o seu login. Backups feitos com o e-mail antigo continuam restauráveis: o app pede a
+        sua senha para confirmar.
+      </p>
+      <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <Mail size={16} />}
+        Salvar novo e-mail
+      </button>
+      <ErrorMessage>{error}</ErrorMessage>
+    </form>
+  );
+}
+
+function ChangeApiKeyForm({
+  currentHint,
+  onDone,
+}: {
+  currentHint: string | null;
+  onDone: (user: AuthUser) => void;
+}) {
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const keyId = useId();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = finnhubKeySchema.safeParse({ apiKey });
+    if (!check.success) {
+      setError(firstIssue(check.error));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await authApi.saveFinnhubKey(check.data.apiKey);
+      setApiKey("");
+      onDone(data.user);
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível salvar a chave."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div className="text-sm text-tv-text/70">
+        Chave atual: <span className="font-mono text-tv-text">{currentHint ?? "nenhuma"}</span>
+      </div>
+      <div className="space-y-1">
+        <FieldLabel htmlFor={keyId}>Nova chave da Finnhub</FieldLabel>
+        <input
+          id={keyId}
+          type="text"
+          className="tv-input w-full font-mono"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="Cole a chave nova aqui"
+          autoComplete="off"
+          spellCheck={false}
+          required
+        />
+      </div>
+      <p className="text-xs text-tv-text/50">
+        A chave é testada na Finnhub antes de ser salva. Se ela não funcionar, a chave atual continua valendo.
+      </p>
+      <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
+        {saving ? "Testando na Finnhub..." : "Testar e salvar"}
+      </button>
+      <ErrorMessage>{error}</ErrorMessage>
+    </form>
   );
 }
 

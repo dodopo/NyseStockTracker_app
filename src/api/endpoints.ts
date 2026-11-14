@@ -17,6 +17,25 @@ export const authApi = {
     api("/api/auth/delete-account", { method: "POST", body: { password, confirmEmail } }),
 };
 
+export type AccountInfo = {
+  email: string;
+  displayName: string | null;
+  createdAt: string;
+  lastLoginAt: string | null;
+  finnhubKeyHint: string | null;
+  activeSessions: number;
+  appVersion: string;
+};
+
+export const accountApi = {
+  info: () => api<AccountInfo>("/api/account"),
+  changePassword: (body: { currentPassword: string; newPassword: string; confirmPassword: string }) =>
+    api("/api/account/password", { method: "POST", body }),
+  changeEmail: (body: { currentPassword: string; newEmail: string }) =>
+    api<UserResponse>("/api/account/email", { method: "POST", body }),
+  logoutAll: () => api("/api/account/logout-all", { method: "POST" }),
+};
+
 export const portfolioApi = {
   stocks: () => api<Stock[]>("/api/stocks"),
   addStock: (stock: Stock) => api("/api/stocks", { method: "POST", body: stock }),
@@ -27,9 +46,9 @@ export const portfolioApi = {
     api<{ success: boolean; id: number }>("/api/transactions", { method: "POST", body: tx }),
   deleteTransaction: (id: number) => api(`/api/transactions/${id}`, { method: "DELETE" }),
   exportBackup: () => api<BackupFileData>("/api/export"),
-  importBackup: (backup: BackupFileData) =>
+  importBackup: (backup: BackupFileData, confirmPassword?: string) =>
     api<{ success: boolean; user: AuthUser; skipped: number }>("/api/import", {
       method: "POST",
-      body: backup,
+      body: confirmPassword ? { ...backup, confirmPassword } : backup,
     }),
 };

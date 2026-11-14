@@ -8,6 +8,8 @@ import type { AppConfig } from "./config";
 import type { DB } from "./db";
 import { parsePositiveDecimal } from "../shared/decimal";
 import {
+  changeEmailSchema,
+  changePasswordSchema,
   deleteAccountSchema,
   finnhubKeySchema,
   firstIssue,
@@ -170,6 +172,8 @@ export function createApp(
     ),
     updateLastLogin: db.prepare(`UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`),
     updateFinnhubKey: db.prepare(`UPDATE users SET finnhub_key = ?, updated_at = ? WHERE id = ?`),
+    updatePassword: db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`),
+    updateEmail: db.prepare(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`),
     updateProfileFromBackup: db.prepare(
       `UPDATE users SET display_name = ?, finnhub_key = COALESCE(?, finnhub_key), updated_at = ? WHERE id = ?`
     ),
@@ -194,6 +198,9 @@ export function createApp(
     ),
     getSession: db.prepare(`SELECT id, user_id, expires_at FROM sessions WHERE token_hash = ?`),
     deleteSession: db.prepare(`DELETE FROM sessions WHERE token_hash = ?`),
+    deleteOtherSessions: db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`),
+    deleteAllSessions: db.prepare(`DELETE FROM sessions WHERE user_id = ?`),
+    countActiveSessions: db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND expires_at > ?`),
     deleteExpiredSessions: db.prepare(`DELETE FROM sessions WHERE expires_at < ?`),
   };
 
@@ -283,6 +290,7 @@ export function createApp(
       return;
     }
     res.locals.user = auth.user;
+    res.locals.tokenHash = auth.tokenHash;
     next();
   };
 
@@ -297,6 +305,33 @@ export function createApp(
     // No server-wide fallback key: each user brings their own Finnhub key.
     if (!user.finnhub_key) throw new HttpError(400, "Missing Finnhub API key");
     return user.finnhub_key;
+  }
+
+  /**
+   * Confirms a Finnhub key works before saving it, with one real quote request,
+   * so a mistyped key never replaces a working one.
+   */
+  async function verifyFinnhubKey(apiKey: string) {
+    let raw: any;
+    try {
+      raw = await finnhubFetch(
+        `https://finnhub.io/api/v1/quote?symbol=AAPL&token=${encodeURIComponent(apiKey)}`
+      );
+    } catch {
+      throw new HttpError(400, "A Finnhub recusou esta chave. Confira se copiou a chave inteira.");
+    }
+    if (!raw || typeof raw !== "object" || !("c" in raw)) {
+      throw new HttpError(400, "A Finnhub não confirmou esta chave. Tente de novo em instantes.");
+    }
+  }
+
+  async function checkPassword(user: UserRow, password: string) {
+    const ok = await bcrypt.compare(password, user.password_hash || dummyHash);
+    if (!user.password_hash || !ok) throw new HttpError(401, "Senha atual incorreta");
+  }
+
+  function keyHint(key: string | null) {
+    return key ? `••••${key.slice(-4)}` : null;
   }
 
   async function getQuoteCached(symbol: string, apiKey: string) {
@@ -472,12 +507,77 @@ export function createApp(
     });
   });
 
-  app.post("/api/auth/finnhub-key", requireAuth, (req, res) => {
-    const user = currentUser(res);
-    const { apiKey } = parseBody(finnhubKeySchema, req.body);
+  app.post(
+    "/api/auth/finnhub-key",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const { apiKey } = parseBody(finnhubKeySchema, req.body);
+      await verifyFinnhubKey(apiKey);
 
-    q.updateFinnhubKey.run(apiKey, nowIso(), user.id);
-    res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
+      q.updateFinnhubKey.run(apiKey, nowIso(), user.id);
+      res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
+    })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Account (settings)
+  // ---------------------------------------------------------------------------
+  app.get("/api/account", requireAuth, (_req, res) => {
+    const user = currentUser(res);
+    const { n } = q.countActiveSessions.get(user.id, nowIso()) as { n: number };
+    res.json({
+      email: user.email,
+      displayName: user.display_name,
+      createdAt: user.created_at,
+      lastLoginAt: user.last_login_at,
+      finnhubKeyHint: keyHint(user.finnhub_key),
+      activeSessions: n,
+      appVersion: config.appVersion,
+    });
+  });
+
+  app.post(
+    "/api/account/password",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const { currentPassword, newPassword } = parseBody(changePasswordSchema, req.body);
+      await checkPassword(user, currentPassword);
+
+      const hash = await bcrypt.hash(newPassword, BCRYPT_COST);
+      db.transaction(() => {
+        q.updatePassword.run(hash, nowIso(), user.id);
+        // Anyone else logged in with the old password is signed out now.
+        q.deleteOtherSessions.run(user.id, res.locals.tokenHash as string);
+      })();
+      res.json({ success: true });
+    })
+  );
+
+  app.post(
+    "/api/account/email",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const { currentPassword, newEmail } = parseBody(changeEmailSchema, req.body);
+      await checkPassword(user, currentPassword);
+
+      if (newEmail === user.email) throw new HttpError(400, "Este já é o seu e-mail");
+      if (q.getUserByEmail.get(newEmail)) throw new HttpError(400, "Este e-mail já está em uso");
+
+      q.updateEmail.run(newEmail, nowIso(), user.id);
+      res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
+    })
+  );
+
+  app.post("/api/account/logout-all", requireAuth, (_req, res) => {
+    q.deleteAllSessions.run(currentUser(res).id);
+    clearSessionCookie(res);
+    res.json({ success: true });
   });
 
   app.post(
@@ -610,7 +710,7 @@ export function createApp(
     });
   });
 
-  app.post("/api/import", requireAuth, (req, res) => {
+  app.post("/api/import", requireAuth, wrap(async (req, res) => {
     const user = currentUser(res);
     const backup = req.body && typeof req.body === "object" ? req.body : {};
     const backupUser = backup.user ?? {};
@@ -622,7 +722,17 @@ export function createApp(
       throw new HttpError(400, "Backup inválido: usuário do backup não informado");
     }
     if (normalizeEmail(backupUser.email) !== user.email) {
-      throw new HttpError(403, "Este backup pertence a outro usuário e não pode ser restaurado nesta conta");
+      // A backup from another e-mail (e.g. before an e-mail change) is restored only
+      // after the account owner confirms with the current password.
+      const confirmPassword = typeof backup.confirmPassword === "string" ? backup.confirmPassword : "";
+      if (!confirmPassword) {
+        res.status(409).json({
+          error: "Este backup é de outro e-mail. Confirme com a sua senha para restaurar.",
+          code: "BACKUP_EMAIL_MISMATCH",
+        });
+        return;
+      }
+      await checkPassword(user, confirmPassword);
     }
     if (stocks.length > LIMITS.importStocksMax || transactions.length > LIMITS.importTransactionsMax) {
       throw new HttpError(400, "Backup too large");
@@ -706,7 +816,7 @@ export function createApp(
       stocks: q.getStocks.all(user.id),
       transactions: q.getTxDesc.all(user.id),
     });
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Market data (Finnhub)
