@@ -1,3 +1,5 @@
+import { api } from "../api/client";
+
 export interface StockPrice {
   ticker: string;
   price: number;
@@ -10,100 +12,59 @@ export interface StockPrice {
   date: string; // YYYY-MM-DD
 }
 
-// -----------------------------
-// Buscar preço de UM ativo
-// -----------------------------
-export async function fetchQuote(symbol: string): Promise<StockPrice | null> {
-  try {
-    const res = await fetch(`/api/quote?symbol=${encodeURIComponent(symbol)}`);
-    if (!res.ok) throw new Error("Failed to fetch quote");
+type QuoteDto = {
+  symbol: string;
+  price: number | null;
+  change: number | null;
+  changePct: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  raw?: { v?: number };
+};
 
-    const data = await res.json();
-
-    return {
-      ticker: data.symbol,
-      price: Number(data.price ?? 0),
-      change: Number(data.change ?? 0),
-      changePercent: Number(data.changePct ?? 0),
-      open: Number(data.open ?? 0),
-      high: Number(data.high ?? 0),
-      low: Number(data.low ?? 0),
-      volume: Number(data.raw?.v ?? 0),
-      date: new Date().toISOString().slice(0, 10),
-    };
-  } catch (error) {
-    console.error("fetchQuote error:", error);
-    return null;
-  }
+function toStockPrice(symbol: string, q: QuoteDto): StockPrice {
+  return {
+    ticker: symbol,
+    price: Number(q.price ?? 0),
+    change: Number(q.change ?? 0),
+    changePercent: Number(q.changePct ?? 0),
+    open: Number(q.open ?? 0),
+    high: Number(q.high ?? 0),
+    low: Number(q.low ?? 0),
+    volume: Number(q.raw?.v ?? 0),
+    date: new Date().toISOString().slice(0, 10),
+  };
 }
 
-// -----------------------------
-// Buscar preços em lote
-// -----------------------------
+/** Quotes for up to 50 symbols in one request. Failed symbols are simply absent. */
 export async function fetchQuotes(symbols: string[]): Promise<StockPrice[]> {
   if (symbols.length === 0) return [];
-
   try {
-    const res = await fetch(`/api/prices?symbols=${symbols.join(",")}`);
-    if (!res.ok) throw new Error("Failed to fetch prices");
-
-    const data = await res.json();
-
-    const result: StockPrice[] = [];
-    for (const symbol of Object.keys(data)) {
-      const q = data[symbol];
-      if (!q || q.price == null) continue;
-
-      result.push({
-        ticker: symbol,
-        price: Number(q.price ?? 0),
-        change: Number(q.change ?? 0),
-        changePercent: Number(q.changePct ?? 0),
-        open: Number(q.open ?? 0),
-        high: Number(q.high ?? 0),
-        low: Number(q.low ?? 0),
-        volume: Number(q.raw?.v ?? 0),
-        date: new Date().toISOString().slice(0, 10),
-      });
-    }
-
-    return result;
+    const query = symbols.map(encodeURIComponent).join(",");
+    const data = await api<Record<string, QuoteDto>>(`/api/prices?symbols=${query}`);
+    return Object.entries(data)
+      .filter(([, q]) => q && q.price != null)
+      .map(([symbol, q]) => toStockPrice(symbol, q));
   } catch (error) {
     console.error("fetchQuotes error:", error);
     return [];
   }
 }
 
-// -----------------------------
-// Busca ticker por nome
-// -----------------------------
+/** First Finnhub match for a ticker or company name, or null. */
 export async function searchStock(query: string): Promise<{ ticker: string; name: string } | null> {
-  try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-    if (!res.ok) throw new Error("Search failed");
-
-    const data = await res.json();
-    if (!data.result || data.result.length === 0) return null;
-
-    const first = data.result[0];
-
-    return {
-      ticker: String(first.symbol || "").toUpperCase(),
-      name: String(first.description || "").trim(),
-    };
-  } catch (error) {
-    console.error("searchStock error:", error);
-    return null;
-  }
+  const data = await api<{ result?: Array<{ symbol?: string; description?: string }> }>(
+    `/api/search?q=${encodeURIComponent(query)}`
+  );
+  const first = data?.result?.[0];
+  if (!first) return null;
+  return {
+    ticker: String(first.symbol || "").toUpperCase(),
+    name: String(first.description || "").trim(),
+  };
 }
 
-// -----------------------------
-// Helper: transforma array em map
-// -----------------------------
 export function pricesToMap(prices: StockPrice[]): Record<string, StockPrice> {
-  const map: Record<string, StockPrice> = {};
-  prices.forEach((p) => {
-    map[p.ticker] = p;
-  });
-  return map;
+  return Object.fromEntries(prices.map((p) => [p.ticker, p]));
 }

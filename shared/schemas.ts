@@ -38,7 +38,7 @@ export const decimalSchema = (label: string) =>
     if (!parsed) {
       ctx.addIssue({
         code: "custom",
-        message: `${label} inválido: use um número positivo com até 8 casas decimais`,
+        message: `${label}: use um número positivo com até 8 casas decimais`,
       });
       return z.NEVER;
     }

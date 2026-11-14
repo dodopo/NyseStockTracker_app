@@ -313,3 +313,54 @@ describe("migrações do banco (MÉDIO: DROP destrutivo no boot)", () => {
     expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
   });
 });
+
+describe("excluir a própria conta", () => {
+  it("exige a senha certa e o e-mail digitado; apaga tudo em cascata", async () => {
+    const { app, db } = setup();
+    const agent = await register(app, "ana@example.com");
+    await agent.post("/api/stocks").send({ ticker: "AAPL", name: "Apple" });
+    await agent
+      .post("/api/transactions")
+      .send({ ticker: "AAPL", type: "BUY", shares: "1", price: "100", date: "2026-01-02" });
+
+    const wrongPassword = await agent
+      .post("/api/auth/delete-account")
+      .send({ password: "wrong-password!!", confirmEmail: "ana@example.com" });
+    expect(wrongPassword.status).toBe(401);
+
+    const wrongEmail = await agent
+      .post("/api/auth/delete-account")
+      .send({ password: PASSWORD, confirmEmail: "outra@example.com" });
+    expect(wrongEmail.status).toBe(400);
+
+    const count = (table: string) =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    expect(count("transactions")).toBe(1);
+
+    const ok = await agent
+      .post("/api/auth/delete-account")
+      .send({ password: PASSWORD, confirmEmail: "ANA@example.com " });
+    expect(ok.status).toBe(200);
+
+    for (const table of ["users", "user_settings", "sessions", "stocks", "transactions"]) {
+      expect(count(table)).toBe(0);
+    }
+    expect((await agent.get("/api/stocks")).status).toBe(401);
+  });
+
+  it("sem sessão não exclui nada", async () => {
+    const { app } = setup();
+    const res = await request(app)
+      .post("/api/auth/delete-account")
+      .send({ password: PASSWORD, confirmEmail: "ana@example.com" });
+    expect(res.status).toBe(401);
+  });
+
+  it("não apaga a conta de outro usuário", async () => {
+    const { app, db } = setup();
+    await register(app, "ana@example.com");
+    const bob = await register(app, "bob@example.com");
+    await bob.post("/api/auth/delete-account").send({ password: PASSWORD, confirmEmail: "ana@example.com" });
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM users`).get() as { n: number }).n).toBe(2);
+  });
+});
