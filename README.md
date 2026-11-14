@@ -47,6 +47,11 @@ O projeto permite:
 - Cache de cotações no backend com TTL configurável
 - Contas com senha, sessões com validade e carteira isolada por usuário
 - Backup e restauração em JSON
+- Quantidades e preços com até 8 casas decimais, calculados sem erro de arredondamento
+- Clique numa linha do Consolidado para abrir o ativo na aba Ações
+- Endereço próprio por tela (`#/acoes/AAPL`): botão voltar e favoritos funcionam
+- Botão para mostrar a senha digitada
+- Exclusão da própria conta (Configurações → Zona de perigo)
 
 
 ## 📦 Instalação
@@ -135,13 +140,23 @@ npm run backup
 Faz uma cópia online do `portfolio.db` (pode rodar com o app ligado), confere a integridade e
 mantém as 30 mais recentes (`BACKUP_DIR`, `BACKUP_RETAIN`).
 
+### Atualizar um servidor pessoal
+
+```bash
+sudo /usr/local/sbin/nysetracker-update vX.Y.Z
+```
+
+Backup, instalação, testes e reinício com volta automática para a versão anterior se algo
+falhar. Instalação do comando e detalhes em [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+
 ### Testes
 
 ```bash
 npm test
 ```
 
-Roda a suíte de testes de segurança (Vitest + Supertest), sem acessar a internet.
+Roda a suíte de testes (Vitest + Supertest), sem acessar a internet. O CI do GitHub roda a
+mesma suíte, o build e o `npm audit` em Node 22, 24 e 26 a cada pull request.
 
 ```bash
 npm run lint
@@ -158,9 +173,21 @@ Verifica os tipos do TypeScript.
 | `server/db.ts` | Abertura do SQLite e migrações versionadas (`PRAGMA user_version`) |
 | `server/validation.ts` | Validações puras de entrada e regras da carteira |
 | `server/app.ts` | `createApp()`: rotas da API, autenticação e middlewares |
+| `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos e cálculo de preço médio |
 | `server/backup.ts` | Backup online do SQLite com checagem de integridade e retenção |
 | `scripts/backup.ts` | Comando `npm run backup` |
+| `scripts/update.sh` | Comando de atualização com rollback automático |
 | `deploy/macos/` | Modelos de LaunchDaemon (app e backup diário) |
+
+## 🧩 Estrutura do frontend
+
+| Pasta | Responsabilidade |
+|---|---|
+| `src/App.tsx` | Orquestra login, abas, rotas e cabeçalho |
+| `src/features/` | Uma pasta por tela: `auth`, `onboarding`, `settings`, `actions`, `consolidated` |
+| `src/hooks/` | Estado: `useAuth`, `usePortfolio`, `useHashRoute` |
+| `src/api/` | Cliente único da API (sempre confere a resposta) e as chamadas tipadas |
+| `src/components/ui.tsx` | Componentes visuais reaproveitáveis (cartão, aba, campo de senha) |
 
 ## ⏪ Versões e rollback
 

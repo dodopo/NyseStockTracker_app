@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { decimalFromLegacyNumber } from "../shared/decimal";
 
 export type DB = Database.Database;
 
@@ -122,7 +123,42 @@ const MIGRATIONS: Array<{ version: number; up: (db: DB) => void }> = [
       db.exec(`UPDATE user_settings SET include_secrets_in_backup = 0;`);
     },
   },
+  {
+    // v3 = v0.5.0 exact decimals. Canonical values live in TEXT columns
+    // (shares_dec, price_dec). The legacy REAL columns are kept and still
+    // written, so rolling back to v0.4.x keeps working on the same database.
+    version: 3,
+    up: (db) => {
+      if (!tableHasColumn(db, "transactions", "shares_dec")) {
+        db.exec(`ALTER TABLE transactions ADD COLUMN shares_dec TEXT;`);
+      }
+      if (!tableHasColumn(db, "transactions", "price_dec")) {
+        db.exec(`ALTER TABLE transactions ADD COLUMN price_dec TEXT;`);
+      }
+    },
+  },
 ];
+
+/**
+ * Fills shares_dec/price_dec for rows that do not have them yet: rows migrated
+ * from REAL, or rows written by an older version after a rollback. Idempotent.
+ */
+export function backfillDecimalColumns(db: DB) {
+  if (!tableHasColumn(db, "transactions", "shares_dec")) return 0;
+
+  const rows = db
+    .prepare(`SELECT id, shares, price FROM transactions WHERE shares_dec IS NULL OR price_dec IS NULL`)
+    .all() as Array<{ id: number; shares: number; price: number }>;
+  if (rows.length === 0) return 0;
+
+  const update = db.prepare(`UPDATE transactions SET shares_dec = ?, price_dec = ? WHERE id = ?`);
+  db.transaction(() => {
+    for (const row of rows) {
+      update.run(decimalFromLegacyNumber(row.shares), decimalFromLegacyNumber(row.price), row.id);
+    }
+  })();
+  return rows.length;
+}
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
@@ -139,6 +175,8 @@ export function migrate(db: DB) {
 
     run();
   }
+
+  backfillDecimalColumns(db);
 }
 
 /**

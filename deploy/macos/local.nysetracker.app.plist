@@ -10,6 +10,8 @@
 <dict>
 	<key>Label</key><string>local.nysetracker.app</string>
 	<key>UserName</key><string>__SERVICE_USER__</string>
+	<!-- Umask 077 (decimal 63): every file the service creates is readable only by its owner. -->
+	<key>Umask</key><integer>63</integer>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
 	<key>ThrottleInterval</key><integer>10</integer>

@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import path from "node:path";
 
 export type AppConfig = {
+  appVersion: string;
   isProd: boolean;
   port: number;
   host: string;
@@ -26,6 +28,15 @@ function readInt(value: string | undefined, fallback: number, min: number, max: 
   return n;
 }
 
+function readAppVersion(rootDir: string) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
  * Reads configuration from environment variables.
  * Every value has a safe default; see .env.example for documentation.
@@ -35,6 +46,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, rootDir = proce
   const sessionTtlDays = readInt(env.SESSION_TTL_DAYS, 7, 1, 90);
 
   return {
+    appVersion: readAppVersion(rootDir),
     isProd,
     port: readInt(env.PORT, 3000, 1, 65535),
     host: env.HOST?.trim() || "127.0.0.1",

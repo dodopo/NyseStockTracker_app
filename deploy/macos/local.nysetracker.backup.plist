@@ -9,6 +9,8 @@
 <dict>
 	<key>Label</key><string>local.nysetracker.backup</string>
 	<key>UserName</key><string>__SERVICE_USER__</string>
+	<!-- Umask 077 (decimal 63): every file the service creates is readable only by its owner. -->
+	<key>Umask</key><integer>63</integer>
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Hour</key><integer>3</integer>

@@ -3,22 +3,30 @@ import bcrypt from "bcrypt";
 import express from "express";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
+import type { z } from "zod";
 import type { AppConfig } from "./config";
 import type { DB } from "./db";
+import { parsePositiveDecimal } from "../shared/decimal";
+import {
+  deleteAccountSchema,
+  finnhubKeySchema,
+  firstIssue,
+  loginSchema,
+  registerSchema,
+  stockSchema,
+  transactionSchema,
+} from "../shared/schemas";
 import {
   LIMITS,
   findNegativePosition,
-  isValidAmount,
-  isValidEmail,
   isValidFinnhubKey,
   isValidIsoDate,
   isValidTicker,
   normalizeEmail,
   normalizeTicker,
-  passwordProblem,
   shortText,
   type PositionTx,
-} from "./validation";
+} from "../shared/validation";
 
 export const SESSION_COOKIE_NAME = "nyse_tracker_session";
 const BCRYPT_COST = 12;
@@ -36,7 +44,7 @@ type UserRow = {
   last_login_at: string | null;
 };
 
-type TxRow = PositionTx & { id: number; price: number };
+type TxRow = PositionTx & { id: number; price: string };
 
 /** Error whose message is safe to show to the user. */
 class HttpError extends Error {
@@ -44,6 +52,16 @@ class HttpError extends Error {
     super(message);
   }
 }
+
+/** Validates a request body with a shared zod schema; 400 with the first issue otherwise. */
+function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.output<S> {
+  const result = schema.safeParse(body ?? {});
+  if (!result.success) throw new HttpError(400, firstIssue(result.error));
+  return result.data;
+}
+
+// Canonical decimal strings come from the *_dec columns (exact); REAL columns are legacy.
+const TX_COLUMNS = `id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order`;
 
 async function defaultFinnhubFetch(url: string) {
   const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
@@ -122,22 +140,21 @@ export function createApp(
     deleteAllStocks: db.prepare(`DELETE FROM stocks WHERE user_id = ?`),
 
     getTxAsc: db.prepare(
-      `SELECT id, ticker, type, shares, price, date, created_at, sort_order
-       FROM transactions WHERE user_id = ? ORDER BY date ASC, sort_order ASC, id ASC`
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? ORDER BY date ASC, sort_order ASC, id ASC`
     ),
     getTxByTicker: db.prepare(
-      `SELECT id, ticker, type, shares, price, date, created_at, sort_order
-       FROM transactions WHERE user_id = ? AND ticker = ? ORDER BY date ASC, sort_order ASC, id ASC`
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? AND ticker = ?
+       ORDER BY date ASC, sort_order ASC, id ASC`
     ),
     getTxDesc: db.prepare(
-      `SELECT id, ticker, type, shares, price, date, created_at, sort_order
-       FROM transactions WHERE user_id = ? ORDER BY date DESC, sort_order DESC, id DESC`
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? ORDER BY date DESC, sort_order DESC, id DESC`
     ),
     getTxById: db.prepare(`SELECT id, ticker FROM transactions WHERE user_id = ? AND id = ?`),
     insertTx: db.prepare(
-      `INSERT INTO transactions (user_id, ticker, type, shares, price, date, created_at, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO transactions (user_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
+    deleteUser: db.prepare(`DELETE FROM users WHERE id = ?`),
     deleteTx: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND id = ?`),
     deleteTxByTicker: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND ticker = ?`),
     deleteAllTx: db.prepare(`DELETE FROM transactions WHERE user_id = ?`),
@@ -182,6 +199,27 @@ export function createApp(
 
   // Used to spend the same bcrypt time when the e-mail does not exist (anti-enumeration).
   const dummyHash = bcrypt.hashSync(crypto.randomBytes(16).toString("hex"), BCRYPT_COST);
+
+  /** Writes the exact decimal columns and the legacy REAL columns (rollback compatibility). */
+  function insertTransaction(
+    userId: number,
+    tx: { ticker: string; type: "BUY" | "SELL"; shares: string; price: string; date: string },
+    createdAt: string,
+    sortOrder: number
+  ) {
+    return q.insertTx.run(
+      userId,
+      tx.ticker,
+      tx.type,
+      Number(tx.shares),
+      Number(tx.price),
+      tx.shares,
+      tx.price,
+      tx.date,
+      createdAt,
+      sortOrder
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // Sessions
@@ -317,8 +355,8 @@ export function createApp(
             directives: {
               defaultSrc: ["'self'"],
               scriptSrc: ["'self'"],
-              styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              fontSrc: ["'self'", "https://fonts.gstatic.com"],
+              styleSrc: ["'self'", "'unsafe-inline'"],
+              fontSrc: ["'self'"],
               imgSrc: ["'self'", "data:"],
               connectSrc: ["'self'"],
               objectSrc: ["'none'"],
@@ -369,17 +407,7 @@ export function createApp(
         throw new HttpError(403, "Registration is disabled on this server");
       }
 
-      const email = normalizeEmail(req.body?.email);
-      const displayName = shortText(req.body?.displayName, LIMITS.displayNameMax) || null;
-      const password = String(req.body?.password ?? "");
-      const confirmPassword = String(req.body?.confirmPassword ?? "");
-
-      if (!isValidEmail(email)) throw new HttpError(400, "Invalid email");
-      const problem = passwordProblem(password);
-      if (problem) throw new HttpError(400, problem);
-      if (password !== confirmPassword) {
-        throw new HttpError(400, "Password confirmation does not match");
-      }
+      const { email, displayName, password } = parseBody(registerSchema, req.body);
       if (q.getUserByEmail.get(email)) throw new HttpError(400, "User already exists");
 
       const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
@@ -401,8 +429,9 @@ export function createApp(
     "/api/auth/login",
     authLimiter,
     wrap(async (req, res) => {
-      const email = normalizeEmail(req.body?.email);
-      const password = String(req.body?.password ?? "");
+      const parsed = loginSchema.safeParse(req.body ?? {});
+      const email = parsed.success ? parsed.data.email : "";
+      const password = parsed.success ? parsed.data.password : "";
 
       const user = q.getUserByEmail.get(email) as UserRow | undefined;
       // Always run bcrypt, even for unknown users, so timing does not reveal accounts.
@@ -428,6 +457,12 @@ export function createApp(
     res.json({ success: true });
   });
 
+  // Liveness + running version, used by the update script to confirm a deploy.
+  app.get("/api/health", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ status: "ok", version: config.appVersion });
+  });
+
   app.get("/api/auth/me", (req, res) => {
     const auth = getAuth(req);
     res.json({
@@ -439,12 +474,32 @@ export function createApp(
 
   app.post("/api/auth/finnhub-key", requireAuth, (req, res) => {
     const user = currentUser(res);
-    const apiKey = String(req.body?.apiKey ?? "").trim();
-    if (!isValidFinnhubKey(apiKey)) throw new HttpError(400, "Invalid API key format");
+    const { apiKey } = parseBody(finnhubKeySchema, req.body);
 
     q.updateFinnhubKey.run(apiKey, nowIso(), user.id);
     res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
   });
+
+  app.post(
+    "/api/auth/delete-account",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const { password, confirmEmail } = parseBody(deleteAccountSchema, req.body);
+
+      const ok = await bcrypt.compare(password, user.password_hash || dummyHash);
+      if (!user.password_hash || !ok) throw new HttpError(401, "Senha incorreta");
+      if (confirmEmail !== user.email) {
+        throw new HttpError(400, "Digite o seu e-mail exatamente como cadastrado para confirmar");
+      }
+
+      // ON DELETE CASCADE removes settings, sessions, stocks and transactions.
+      q.deleteUser.run(user.id);
+      clearSessionCookie(res);
+      res.json({ success: true });
+    })
+  );
 
   // ---------------------------------------------------------------------------
   // Portfolio
@@ -455,11 +510,7 @@ export function createApp(
 
   app.post("/api/stocks", requireAuth, (req, res) => {
     const user = currentUser(res);
-    const ticker = normalizeTicker(req.body?.ticker);
-    const name = shortText(req.body?.name, LIMITS.stockNameMax);
-
-    if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
-    if (!name) throw new HttpError(400, "Missing name");
+    const { ticker, name } = parseBody(stockSchema, req.body);
     if (q.getStock.get(user.id, ticker)) throw new HttpError(400, "Stock already exists");
 
     q.insertStock.run(user.id, ticker, name, nowIso());
@@ -491,17 +542,8 @@ export function createApp(
 
   app.post("/api/transactions", requireAuth, (req, res) => {
     const user = currentUser(res);
-    const ticker = normalizeTicker(req.body?.ticker);
-    const type = String(req.body?.type ?? "").trim().toUpperCase();
-    const shares = Number(req.body?.shares);
-    const price = Number(req.body?.price);
-    const date = String(req.body?.date ?? "").trim();
-
-    if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
-    if (type !== "BUY" && type !== "SELL") throw new HttpError(400, "Invalid type (BUY/SELL)");
-    if (!isValidAmount(shares)) throw new HttpError(400, "Invalid shares");
-    if (!isValidAmount(price)) throw new HttpError(400, "Invalid price");
-    if (!isValidIsoDate(date)) throw new HttpError(400, "Invalid date (YYYY-MM-DD)");
+    const tx = parseBody(transactionSchema, req.body);
+    const { ticker, type, shares, date } = tx;
     if (!q.getStock.get(user.id, ticker)) {
       throw new HttpError(400, "Ticker not found in portfolio. Add the stock first.");
     }
@@ -517,8 +559,7 @@ export function createApp(
         throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
       }
 
-      return q.insertTx.run(user.id, ticker, type, shares, price, date, nowIso(), nextSortOrder)
-        .lastInsertRowid;
+      return insertTransaction(user.id, tx, nowIso(), nextSortOrder).lastInsertRowid;
     })();
 
     res.status(201).json({ success: true, id: Number(id) });
@@ -628,29 +669,25 @@ export function createApp(
       const imported: PositionTx[] = [];
       let fallbackSortOrder = 1;
       for (const tr of transactions) {
-        const ticker = normalizeTicker(tr?.ticker);
-        const type = String(tr?.type ?? "").trim().toUpperCase();
-        const shares = Number(tr?.shares);
-        const price = Number(tr?.price);
-        const date = String(tr?.date ?? "").trim();
-        const sortRaw = Number(tr?.sort_order);
-        const sortOrder = Number.isSafeInteger(sortRaw) && sortRaw > 0 ? sortRaw : fallbackSortOrder;
-
-        if (
-          !knownTickers.has(ticker) ||
-          (type !== "BUY" && type !== "SELL") ||
-          !isValidAmount(shares) ||
-          !isValidAmount(price) ||
-          !isValidIsoDate(date)
-        ) {
+        // Accepts numbers (backups from v0.4.x and older) or exact decimal strings (v0.5.0+).
+        const parsed = transactionSchema.safeParse(tr ?? {});
+        if (!parsed.success || !knownTickers.has(parsed.data.ticker)) {
           skipped++;
           continue;
         }
+        const tx = parsed.data;
+        const sortRaw = Number(tr?.sort_order);
+        const sortOrder = Number.isSafeInteger(sortRaw) && sortRaw > 0 ? sortRaw : fallbackSortOrder;
 
-        const info = q.insertTx.run(
-          user.id, ticker, type, shares, price, date, shortText(tr?.created_at) || nowIso(), sortOrder
-        );
-        imported.push({ id: Number(info.lastInsertRowid), ticker, type, shares, date, sort_order: sortOrder });
+        const info = insertTransaction(user.id, tx, shortText(tr?.created_at) || nowIso(), sortOrder);
+        imported.push({
+          id: Number(info.lastInsertRowid),
+          ticker: tx.ticker,
+          type: tx.type,
+          shares: tx.shares,
+          date: tx.date,
+          sort_order: sortOrder,
+        });
         fallbackSortOrder += 1;
       }
 
