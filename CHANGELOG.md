@@ -16,6 +16,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.7.1] - 2026-11-14
+
+Chart fixes found while validating v0.7.0 with real Massive data. No database migration.
+
+### Fixed
+- **Trade markers no longer overlap.** Labels collided when trades were close in time (e.g. buys on Mar 18 and Mar 31 on a daily chart). Markers are now arrows only, one per candle and side (trades on the same candle are grouped), and the trades of the candle under the mouse are listed below the legend, e.g. "▼ Venda 500 @ $301,64 · 21/04/2026".
+- **Intraday shows the regular session by default.** Massive intraday bars include pre- and after-market (04:00–20:00 New York), so the last 1D candle could differ from the official close. Intraday charts now show 09:30–16:00 New York (handles daylight saving) with an **"Estendido"** toggle for extended hours.
+
+### Added
+- `shared/chartData.ts` (pure chart helpers) and 7 tests (65 in total).
+
+
 ## [0.7.0] - 2026-11-14
 
 Charts: TradingView-style price chart for every asset. Database migration v4 is **additive** (one new column); rolling back to v0.6.x works on the same database.
