@@ -22,9 +22,10 @@ import { KeyRound, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { ApiError, errorMessage } from "../../api/client";
 import { marketApi } from "../../api/endpoints";
 import { Card } from "../../components/ui";
-import { cn, formatPercent, formatPrice } from "../../lib/utils";
+import { cn, formatPercent, formatPrice, formatQuantity } from "../../lib/utils";
 import type { Candle, Transaction } from "../../types";
 import { CHART_INTERVALS, CHART_RANGES, isIntraday, type ChartRangeId } from "../../../shared/chartRanges";
+import { filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
 
 const COLORS = {
   bg: "#1e222d",
@@ -37,10 +38,6 @@ const COLORS = {
 
 const toTime = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
 const fromTime = (time: Time) => (typeof time === "number" ? time * 1000 : 0);
-
-/** US market session date of a timestamp (purchases are recorded per session date). */
-const nyDate = (ms: number) =>
-  new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(ms));
 
 function formatVolume(v: number) {
   return new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 2 }).format(v);
@@ -78,6 +75,8 @@ export function PriceChart({
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  // Intraday: regular session only (09:30–16:00 New York) unless the user asks for extended hours.
+  const [extended, setExtended] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -186,9 +185,15 @@ export function PriceChart({
     };
   }, [symbol, range, interval]);
 
-  const candles = state.status === "ready" ? state.candles : [];
   const activeInterval = state.status === "ready" ? state.interval : CHART_RANGES[range].auto;
   const intraday = isIntraday(activeInterval);
+  const candles = useMemo(() => {
+    const all = state.status === "ready" ? state.candles : [];
+    return intraday && !extended ? filterRegularSession(all, activeInterval) : all;
+  }, [state, intraday, extended, activeInterval]);
+
+  // Trades grouped by candle: one arrow per candle and type; details go to the legend.
+  const tradesByCandle = useMemo(() => groupTradesByCandle(candles, transactions as ChartTrade[]), [candles, transactions]);
 
   // --- push data, markers and the average-price line into the chart ------------
   useEffect(() => {
@@ -210,22 +215,15 @@ export function PriceChart({
       }))
     );
 
-    // My trades: each one on the last candle that starts on or before its session date.
+    // My trades: arrows only (labels collided when trades were close); details in the legend.
     const markers: SeriesMarker<Time>[] = [];
-    if (candles.length) {
-      const sessionDates = candles.map((c) => nyDate(c.t));
-      for (const tx of transactions) {
-        if (tx.date < sessionDates[0] || tx.date > sessionDates[sessionDates.length - 1]) continue;
-        let i = sessionDates.length - 1;
-        while (i > 0 && sessionDates[i] > tx.date) i--;
-        const buy = tx.type === "BUY";
-        markers.push({
-          time: toTime(candles[i].t),
-          position: buy ? "belowBar" : "aboveBar",
-          shape: buy ? "arrowUp" : "arrowDown",
-          color: buy ? COLORS.up : COLORS.down,
-          text: `${buy ? "C" : "V"} ${Number(tx.shares).toLocaleString("pt-BR", { maximumFractionDigits: 8 })}`,
-        });
+    for (const [index, group] of tradesByCandle) {
+      const time = toTime(candles[index].t);
+      if (group.buys.length) {
+        markers.push({ time, position: "belowBar", shape: "arrowUp", color: COLORS.up, id: `buy-${index}` });
+      }
+      if (group.sells.length) {
+        markers.push({ time, position: "aboveBar", shape: "arrowDown", color: COLORS.down, id: `sell-${index}` });
       }
     }
     markers.sort((a, b) => (a.time as number) - (b.time as number));
@@ -247,7 +245,7 @@ export function PriceChart({
     }
 
     chart.timeScale().fitContent();
-  }, [candles, transactions, avgCost, hasPosition, intraday, fullscreen]);
+  }, [candles, tradesByCandle, avgCost, hasPosition, intraday, fullscreen]);
 
   // Esc leaves full screen.
   useEffect(() => {
@@ -266,6 +264,8 @@ export function PriceChart({
 
   const shownIndex = hoverIndex ?? (candles.length ? candles.length - 1 : null);
   const shown = shownIndex !== null ? candles[shownIndex] : null;
+  const shownTrades = shownIndex !== null ? tradesByCandle.get(shownIndex) : undefined;
+  const tradeLines = shownTrades ? [...shownTrades.buys, ...shownTrades.sells].sort((a, b) => a.date.localeCompare(b.date)) : [];
   const prevClose = shownIndex !== null && shownIndex > 0 ? candles[shownIndex - 1].c : shown?.o ?? null;
   const candleChange = shown && prevClose ? { abs: shown.c - prevClose, pct: ((shown.c - prevClose) / prevClose) * 100 } : null;
 
@@ -318,6 +318,20 @@ export function PriceChart({
                 </option>
               ))}
             </select>
+            {intraday && (
+              <button
+                type="button"
+                aria-pressed={extended}
+                onClick={() => setExtended((v) => !v)}
+                title="Incluir pré-mercado e pós-mercado (4h–20h de NY)"
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs font-semibold border transition-all",
+                  extended ? "border-tv-accent/60 bg-tv-accent/15 text-tv-text" : "border-white/10 text-tv-text/60 hover:bg-white/5"
+                )}
+              >
+                Estendido
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setFullscreen((f) => !f)}
@@ -365,8 +379,20 @@ export function PriceChart({
             >
               {periodChange.abs >= 0 ? "+" : ""}
               {periodChange.abs.toFixed(2)} ({formatPercent(periodChange.pct)}) · {rangeConfig.title.toLowerCase()}
+              {intraday && !extended ? " · pregão regular" : ""}
             </span>
           )}
+        </div>
+
+        {/* My trades on the candle under the mouse (or the last one). */}
+        <div className="px-4 pb-1 min-h-[20px] text-xs flex flex-wrap gap-x-4 gap-y-1" aria-live="polite">
+          {tradeLines.slice(0, 4).map((t, i) => (
+            <span key={`${t.date}-${t.type}-${i}`} className={t.type === "BUY" ? "text-tv-up" : "text-tv-down"}>
+              {t.type === "BUY" ? "▲ Compra" : "▼ Venda"} {formatQuantity(t.shares)} @ {formatPrice(t.price)}
+              <span className="text-tv-text/40"> · {new Date(`${t.date}T12:00:00Z`).toLocaleDateString("pt-BR")}</span>
+            </span>
+          ))}
+          {tradeLines.length > 4 && <span className="text-tv-text/40">+{tradeLines.length - 4} operações</span>}
         </div>
 
         <div className={cn("relative", fullscreen ? "flex-1 min-h-0" : "h-[420px]")}>
@@ -399,7 +425,7 @@ export function PriceChart({
         <div className="px-4 py-2 border-t border-white/5 flex flex-wrap justify-between gap-2 text-[10px] text-tv-text/40">
           <span>
             Dados: Massive (com atraso{state.status === "ready" && state.stale ? "; exibindo cache por causa do limite de 5/min" : ""}) ·
-            horário local · ▲ minhas compras ▼ minhas vendas{hasPosition ? " · linha azul = meu preço médio" : ""}
+            horário local · ▲ minhas compras ▼ minhas vendas (detalhes ao passar o mouse){hasPosition ? " · linha azul = meu preço médio" : ""}
           </span>
           <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="hover:text-tv-text/70">
             Gráfico: TradingView Lightweight Charts™
