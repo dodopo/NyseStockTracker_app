@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { AuthUser, BackupFileData, Stock, Transaction } from "../types";
+import type { AuthUser, BackupFileData, CandlesResponse, Stock, StockStats, Transaction } from "../types";
 
 type UserResponse = { success: boolean; user: AuthUser };
 
@@ -13,6 +13,8 @@ export const authApi = {
   logout: () => api("/api/auth/logout", { method: "POST" }),
   saveFinnhubKey: (apiKey: string) =>
     api<UserResponse>("/api/auth/finnhub-key", { method: "POST", body: { apiKey } }),
+  saveMassiveKey: (apiKey: string) =>
+    api<UserResponse>("/api/auth/massive-key", { method: "POST", body: { apiKey } }),
   deleteAccount: (password: string, confirmEmail: string) =>
     api("/api/auth/delete-account", { method: "POST", body: { password, confirmEmail } }),
 };
@@ -23,6 +25,7 @@ export type AccountInfo = {
   createdAt: string;
   lastLoginAt: string | null;
   finnhubKeyHint: string | null;
+  massiveKeyHint: string | null;
   activeSessions: number;
   appVersion: string;
 };
@@ -51,4 +54,12 @@ export const portfolioApi = {
       method: "POST",
       body: confirmPassword ? { ...backup, confirmPassword } : backup,
     }),
+};
+
+export const marketApi = {
+  candles: (symbol: string, range: string, interval = "auto") =>
+    api<CandlesResponse>(
+      `/api/candles?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}`
+    ),
+  stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
 };

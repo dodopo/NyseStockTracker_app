@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useState } from "react";
-import { CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
+import { CandlestickChart, CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
 import { accountApi, authApi, portfolioApi, type AccountInfo } from "../../api/endpoints";
 import { ApiError, errorMessage } from "../../api/client";
 import { cn } from "../../lib/utils";
@@ -8,6 +8,7 @@ import {
   changePasswordSchema,
   finnhubKeySchema,
   firstIssue,
+  massiveKeySchema,
 } from "../../../shared/schemas";
 import { LIMITS, normalizeEmail } from "../../../shared/validation";
 import { Card, ErrorMessage, FieldLabel, PasswordInput } from "../../components/ui";
@@ -277,7 +278,7 @@ function SuccessMessage({ children }: { children: React.ReactNode }) {
   );
 }
 
-type AccountPanel = "password" | "email" | "apikey" | null;
+type AccountPanel = "password" | "email" | "apikey" | "massive" | null;
 
 function AccountCard({
   user,
@@ -332,6 +333,7 @@ function AccountCard({
     { id: "password" as const, icon: Lock, label: "Trocar senha" },
     { id: "email" as const, icon: Mail, label: "Trocar e-mail" },
     { id: "apikey" as const, icon: KeyRound, label: "Trocar API key" },
+    { id: "massive" as const, icon: CandlestickChart, label: "Chave dos gráficos" },
   ];
 
   return (
@@ -342,11 +344,12 @@ function AccountCard({
         <InfoRow label="Conta criada em" value={formatDateTime(info?.createdAt ?? null)} />
         <InfoRow label="Último acesso" value={formatDateTime(info?.lastLoginAt ?? null)} />
         <InfoRow label="Chave da Finnhub" value={info?.finnhubKeyHint ?? "—"} mono />
+        <InfoRow label="Chave da Massive (gráficos)" value={info?.massiveKeyHint ?? "não configurada"} mono />
         <InfoRow label="Sessões ativas" value={info ? String(info.activeSessions) : "—"} />
         <InfoRow label="Versão do app" value={info ? `v${info.appVersion}` : "—"} mono />
       </dl>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         {buttons.map(({ id, icon: Icon, label }) => (
           <button
             key={id}
@@ -379,10 +382,21 @@ function AccountCard({
           )}
           {panel === "apikey" && (
             <ChangeApiKeyForm
+              provider="finnhub"
               currentHint={info?.finnhubKeyHint ?? null}
               onDone={(updated) => {
                 onUserChanged(updated);
                 done("Chave da Finnhub testada e salva.");
+              }}
+            />
+          )}
+          {panel === "massive" && (
+            <ChangeApiKeyForm
+              provider="massive"
+              currentHint={info?.massiveKeyHint ?? null}
+              onDone={(updated) => {
+                onUserChanged(updated);
+                done("Chave da Massive testada e salva. Os gráficos já podem ser usados.");
               }}
             />
           )}
@@ -525,13 +539,33 @@ function ChangeEmailForm({ onDone }: { onDone: (user: AuthUser) => void }) {
   );
 }
 
+const KEY_PROVIDERS = {
+  finnhub: {
+    name: "Finnhub",
+    purpose: "cotações e busca de ativos",
+    signupUrl: "https://finnhub.io/dashboard",
+    schema: finnhubKeySchema,
+    save: authApi.saveFinnhubKey,
+  },
+  massive: {
+    name: "Massive",
+    purpose: "histórico para os gráficos (plano grátis: 2 anos, 5 consultas por minuto)",
+    signupUrl: "https://massive.com/dashboard",
+    schema: massiveKeySchema,
+    save: authApi.saveMassiveKey,
+  },
+} as const;
+
 function ChangeApiKeyForm({
+  provider,
   currentHint,
   onDone,
 }: {
+  provider: keyof typeof KEY_PROVIDERS;
   currentHint: string | null;
   onDone: (user: AuthUser) => void;
 }) {
+  const cfg = KEY_PROVIDERS[provider];
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -539,7 +573,7 @@ function ChangeApiKeyForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const check = finnhubKeySchema.safeParse({ apiKey });
+    const check = cfg.schema.safeParse({ apiKey });
     if (!check.success) {
       setError(firstIssue(check.error));
       return;
@@ -547,7 +581,7 @@ function ChangeApiKeyForm({
     setSaving(true);
     setError(null);
     try {
-      const data = await authApi.saveFinnhubKey(check.data.apiKey);
+      const data = await cfg.save(check.data.apiKey);
       setApiKey("");
       onDone(data.user);
     } catch (err) {
@@ -560,10 +594,11 @@ function ChangeApiKeyForm({
   return (
     <form onSubmit={submit} className="space-y-3">
       <div className="text-sm text-tv-text/70">
-        Chave atual: <span className="font-mono text-tv-text">{currentHint ?? "nenhuma"}</span>
+        Chave atual da {cfg.name}: <span className="font-mono text-tv-text">{currentHint ?? "nenhuma"}</span>
+        <div className="text-xs text-tv-text/50 mt-1">Usada para {cfg.purpose}.</div>
       </div>
       <div className="space-y-1">
-        <FieldLabel htmlFor={keyId}>Nova chave da Finnhub</FieldLabel>
+        <FieldLabel htmlFor={keyId}>Nova chave da {cfg.name}</FieldLabel>
         <input
           id={keyId}
           type="text"
@@ -577,11 +612,15 @@ function ChangeApiKeyForm({
         />
       </div>
       <p className="text-xs text-tv-text/50">
-        A chave é testada na Finnhub antes de ser salva. Se ela não funcionar, a chave atual continua valendo.
+        A chave é testada na {cfg.name} antes de ser salva. Se ela não funcionar, nada muda. Pegue a chave em{" "}
+        <a href={cfg.signupUrl} target="_blank" rel="noreferrer noopener" className="text-tv-accent hover:underline">
+          {cfg.signupUrl.replace("https://", "")}
+        </a>
+        .
       </p>
       <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
         {saving ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
-        {saving ? "Testando na Finnhub..." : "Testar e salvar"}
+        {saving ? `Testando na ${cfg.name}...` : "Testar e salvar"}
       </button>
       <ErrorMessage>{error}</ErrorMessage>
     </form>

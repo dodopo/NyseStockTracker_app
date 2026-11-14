@@ -6,6 +6,8 @@
  * switch ranges freely without ever hitting the provider limit.
  */
 
+import { CHART_RANGES, type ChartRangeId } from "../shared/chartRanges";
+
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 export type Timespan = "minute" | "hour" | "day" | "week" | "month";
 export type Interval = { multiplier: number; timespan: Timespan };
@@ -26,22 +28,15 @@ export const INTERVALS: Record<string, Interval> = {
 const DAY = 86_400_000;
 const MAX_HISTORY_DAYS = 730; // free plan: 2 years
 
-/**
- * Period buttons. Each one has a default candle size (like TradingView) and the
- * candle sizes allowed for it (keeps responses small and within the plan).
- */
-export const RANGES: Record<string, { days: (now: number) => number; auto: string; allowed: string[] }> = {
-  "1D": { days: () => 5, auto: "5m", allowed: ["5m", "15m", "30m", "1h"] }, // 5 days fetched, last session shown
-  "1S": { days: () => 7, auto: "30m", allowed: ["5m", "15m", "30m", "1h"] },
-  "1M": { days: () => 31, auto: "1h", allowed: ["15m", "30m", "1h", "1D"] },
-  "3M": { days: () => 92, auto: "1D", allowed: ["1h", "1D", "1W"] },
-  YTD: {
-    days: (now) => Math.max(1, Math.ceil((now - Date.UTC(new Date(now).getUTCFullYear(), 0, 1)) / DAY)),
-    auto: "1D",
-    allowed: ["1D", "1W"],
-  },
-  "1A": { days: () => 366, auto: "1D", allowed: ["1D", "1W", "1M"] },
-  MAX: { days: () => MAX_HISTORY_DAYS, auto: "1W", allowed: ["1D", "1W", "1M"] },
+/** Lookback in days for each period button (sizes/labels live in shared/chartRanges). */
+const RANGE_DAYS: Record<ChartRangeId, (now: number) => number> = {
+  "1D": () => 5, // 5 days fetched to cover weekends/holidays; only the last session is kept
+  "1S": () => 7,
+  "1M": () => 31,
+  "3M": () => 92,
+  YTD: (now) => Math.max(1, Math.ceil((now - Date.UTC(new Date(now).getUTCFullYear(), 0, 1)) / DAY)),
+  "1A": () => 366,
+  MAX: () => MAX_HISTORY_DAYS,
 };
 
 export class CandleError extends Error {
@@ -99,11 +94,12 @@ export function createCandleService(options: {
   }
 
   async function getCandles(params: { symbol: string; range: string; interval?: string; apiKey: string }) {
-    const range = RANGES[params.range];
-    if (!range) throw new CandleError(400, "Período inválido");
+    if (!Object.hasOwn(CHART_RANGES, params.range)) throw new CandleError(400, "Período inválido");
+    const rangeId = params.range as ChartRangeId;
+    const range = CHART_RANGES[rangeId];
 
-    const intervalId = params.interval && params.interval !== "auto" ? params.interval : range.auto;
-    if (!range.allowed.includes(intervalId)) {
+    const intervalId: string = params.interval && params.interval !== "auto" ? params.interval : range.auto;
+    if (!(range.allowed as readonly string[]).includes(intervalId) || !Object.hasOwn(INTERVALS, intervalId)) {
       throw new CandleError(400, `Vela de ${intervalId} não disponível para o período ${params.range}`);
     }
     const interval = INTERVALS[intervalId];
@@ -125,7 +121,7 @@ export function createCandleService(options: {
     }
 
     const to = now();
-    const from = to - Math.min(range.days(to), MAX_HISTORY_DAYS) * DAY;
+    const from = to - Math.min(RANGE_DAYS[rangeId](to), MAX_HISTORY_DAYS) * DAY;
     const path =
       `/v2/aggs/ticker/${encodeURIComponent(params.symbol)}/range/${interval.multiplier}/${interval.timespan}` +
       `/${isoDate(from)}/${isoDate(to)}?adjusted=true&sort=asc&limit=50000`;
@@ -162,7 +158,9 @@ export function createCandleService(options: {
 
 /** Default HTTP client for Massive: key in the Authorization header, never in the URL. */
 export async function defaultMassiveFetch(path: string, apiKey: string) {
-  const res = await fetch(`https://api.massive.com${path}`, {
+  // MASSIVE_BASE_URL: advanced/testing override (e.g. https://api.polygon.io or a local mock).
+  const base = (process.env.MASSIVE_BASE_URL || "https://api.massive.com").replace(/\/+$/, "");
+  const res = await fetch(`${base}${path}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(15_000),
   });
