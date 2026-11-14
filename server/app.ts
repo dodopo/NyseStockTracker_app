@@ -457,6 +457,12 @@ export function createApp(
     res.json({ success: true });
   });
 
+  // Liveness + running version, used by the update script to confirm a deploy.
+  app.get("/api/health", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ status: "ok", version: config.appVersion });
+  });
+
   app.get("/api/auth/me", (req, res) => {
     const auth = getAuth(req);
     res.json({

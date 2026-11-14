@@ -364,3 +364,12 @@ describe("excluir a própria conta", () => {
     expect((db.prepare(`SELECT COUNT(*) AS n FROM users`).get() as { n: number }).n).toBe(2);
   });
 });
+
+describe("health check", () => {
+  it("responde a versão em execução, sem sessão e sem dados de usuário", async () => {
+    const { app } = setup();
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok", version: expect.stringMatching(/^\d+\.\d+\.\d+$/) });
+  });
+});
