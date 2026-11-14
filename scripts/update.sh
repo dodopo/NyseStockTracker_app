@@ -52,11 +52,14 @@ running_version() {
   curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
 }
 
+# Waits until /api/health reports version $1 ("v" alone = any healthy version,
+# used when the app was already down before the update).
 wait_for_version() {
   want="$1"
   elapsed=0
   while [ "$elapsed" -lt "$HEALTH_TIMEOUT" ]; do
-    if [ "v$(running_version)" = "$want" ]; then return 0; fi
+    got="v$(running_version)"
+    if [ "$got" != "v" ] && { [ "$want" = "v" ] || [ "$got" = "$want" ]; }; then return 0; fi
     sleep 2
     elapsed=$((elapsed + 2))
   done
@@ -95,6 +98,7 @@ if [ "$PREV" = "$TAG" ]; then
   exit 0
 fi
 PREV_RUNNING="v$(running_version)"
+[ "$PREV_RUNNING" = "v" ] && log "aviso: o app não está respondendo agora (seguindo mesmo assim)"
 log "versão atual: $PREV (no ar: $PREV_RUNNING) -> nova: $TAG"
 
 # --- 2. backup ---------------------------------------------------------------
