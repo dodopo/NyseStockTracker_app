@@ -187,6 +187,96 @@ describe("cache de velas por chave (v0.9.1)", () => {
   });
 });
 
+describe("v0.10.0: busca de cripto pela Coinbase e períodos", () => {
+  const products = [
+    { base_currency: "BTC", quote_currency: "USD", status: "online" },
+    { base_currency: "ETH", quote_currency: "USD", status: "online" },
+    { base_currency: "ETC", quote_currency: "USD", status: "online" },
+    { base_currency: "ETH", quote_currency: "EUR", status: "online" },
+    { base_currency: "OLD", quote_currency: "USD", status: "delisted" },
+    { base_currency: "WEIRD-X", quote_currency: "USD", status: "online" },
+  ];
+  const currencies = [
+    { id: "BTC", name: "Bitcoin" },
+    { id: "ETH", name: "Ether" },
+    { id: "ETC", name: "Ethereum Classic" },
+  ];
+
+  async function setup(coinbaseUp = true) {
+    let calls = 0;
+    const dataFetch: DataFetch = async (url) => {
+      if (!coinbaseUp) throw new ProviderError(503, "down");
+      calls++;
+      if (url.endsWith("/products")) return products;
+      if (url.endsWith("/currencies")) return currencies;
+      throw new ProviderError(404, "NotFound");
+    };
+    const db = openDatabase(":memory:");
+    const app = createApp(db, loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv), {
+      finnhubFetch: async () => ({ c: 100 }),
+      massiveFetch: async () => ({ results: [] }),
+      dataFetch,
+    });
+    const agent = request.agent(app);
+    await agent.post("/api/auth/register").send({ email: "ana@example.com", password: PASSWORD, confirmPassword: PASSWORD });
+    return { agent, calls: () => calls };
+  }
+
+  it("sem chave: só pares em dólar ativos, 'Ethereum' acha o ETH primeiro, lista guardada por 24 h", async () => {
+    const { agent, calls } = await setup();
+    const res = await agent.get("/api/search?q=ethereum&type=crypto");
+    expect(res.status).toBe(200);
+    expect(res.body.source).toBe("coinbase");
+    expect(res.body.result.map((r: { symbol: string }) => r.symbol)).toEqual(["X:ETHUSD", "X:ETCUSD"]);
+    expect(res.body.result[0]).toEqual({ symbol: "X:ETHUSD", description: "Ether", displaySymbol: "ETH" });
+    expect((await agent.get("/api/search?q=btc&type=crypto")).body.result[0].symbol).toBe("X:BTCUSD");
+    expect((await agent.get("/api/search?q=old&type=crypto")).body.result).toEqual([]); // delisted
+    expect(calls()).toBe(2); // products + currencies, once
+  });
+
+  it("Coinbase fora do ar e sem chave da Massive: erro claro", async () => {
+    const { agent } = await setup(false);
+    const res = await agent.get("/api/search?q=bitcoin&type=crypto");
+    expect(res.status).toBe(502);
+  });
+
+  it("períodos 3A/5A/10A e personalizado: datas validadas e vela automática pelo tamanho", async () => {
+    const cb = fakeCoinbase();
+    const svc = createCandleService({ fetch: async () => ({}), dataFetch: cb.fetch, now: () => NOW });
+    const tenY = await svc.getCandles({ symbol: "X:BTCUSD", range: "10A" });
+    expect(tenY.interval).toBe("1W");
+    expect(NOW - tenY.requestedFrom).toBeGreaterThan(3650 * DAY);
+
+    const custom = await svc.getCandles({ symbol: "X:BTCUSD", range: "CUSTOM", customFrom: "2026-11-01", customTo: "2026-11-05" });
+    expect(custom.interval).toBe("30m"); // 5 days
+    expect(custom.candles[0].t).toBeGreaterThanOrEqual(Date.UTC(2026, 10, 1));
+    expect(custom.candles.at(-1)!.t).toBeLessThan(Date.UTC(2026, 10, 6));
+
+    // same candle size, other dates: not served from the first period's cache
+    const shifted = await svc.getCandles({ symbol: "X:BTCUSD", range: "CUSTOM", customFrom: "2026-11-03", customTo: "2026-11-07" });
+    expect(shifted.interval).toBe("30m");
+    expect(shifted.candles[0].t).toBeGreaterThanOrEqual(Date.UTC(2026, 10, 3));
+
+    const early = await svc.getCandles({ symbol: "X:BTCUSD", range: "CUSTOM", customFrom: "2010-01-01", customTo: "2016-01-01" });
+    expect(early.interval).toBe("1W");
+    expect(early.requestedFrom).toBe(Date.UTC(2010, 0, 1)); // the chart compares with its first candle (2015)
+
+    for (const [f, t] of [
+      ["2026-11-05", "2026-11-01"], // reversed
+      ["1989-12-31", "2000-01-01"], // too old
+      ["2026-02-30", "2026-03-01"], // not a date
+      ["2027-01-01", "2027-02-01"], // future
+      ["ontem", "hoje"],
+    ]) {
+      await expect(svc.getCandles({ symbol: "X:BTCUSD", range: "CUSTOM", customFrom: f, customTo: t })).rejects.toMatchObject({ status: 400 });
+    }
+    // minute candles are refused on long custom periods
+    await expect(
+      svc.getCandles({ symbol: "X:BTCUSD", range: "CUSTOM", interval: "5m", customFrom: "2026-01-01", customTo: "2026-11-01" })
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
 describe("médias móveis", () => {
   const daily = (n: number, start = Date.UTC(2020, 0, 6, 5)) => Array.from({ length: n }, (_, i) => ({ t: start + i * DAY, c: i + 1 }));
 
@@ -222,6 +312,9 @@ describe("médias móveis", () => {
       { t: 1500, v: 2 },
       { t: 2600, v: 3 },
     ]);
+    // a period that ends in the past: the last candle does not take later values
+    const later = [...series, { t: 9000, v: 9 }];
+    expect(alignToCandles(later, [500, 1500, 2600], 500).at(-1)).toEqual({ t: 2600, v: 3 });
   });
 });
 

@@ -94,6 +94,8 @@ export type CandlesResponse = {
   source: string;
   /** Set when the main provider failed and a fallback answered. */
   fallbackFrom?: string;
+  /** Start of the requested period (ms); data may start later. */
+  requestedFrom?: number;
   candles: Candle[];
   cached?: boolean;
   stale?: boolean;

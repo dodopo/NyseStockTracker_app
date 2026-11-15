@@ -19,13 +19,25 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { KeyRound, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { CalendarRange, KeyRound, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { ApiError, errorMessage } from "../../api/client";
 import { marketApi } from "../../api/endpoints";
 import { Card } from "../../components/ui";
 import { cn, formatPercent, formatPrice, formatQuantity } from "../../lib/utils";
 import type { Candle, Transaction } from "../../types";
-import { CHART_INTERVALS, CHART_RANGES, DATA_SOURCES, isChartStale, isIntraday, type ChartRangeId } from "../../../shared/chartRanges";
+import {
+  CHART_INTERVALS,
+  CHART_RANGES,
+  CUSTOM_MIN_DATE,
+  CUSTOM_RANGE,
+  DATA_SOURCES,
+  INTERVAL_MS,
+  customRangeConfig,
+  isChartStale,
+  isIntraday,
+  parseCustomRange,
+  type ChartRangeId,
+} from "../../../shared/chartRanges";
 import { MOVING_AVERAGES, MOVING_AVERAGE_IDS, alignToCandles, daysNeeded, type MovingAverageId } from "../../../shared/indicators";
 import { filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
 import { ASSET_TYPES, type AssetType } from "../../../shared/assetTypes";
@@ -83,7 +95,7 @@ function formatWhen(ms: number, intraday: boolean) {
 
 type LoadState =
   | { status: "loading" }
-  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean; source: string; fallbackFrom?: string }
+  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean; source: string; fallbackFrom?: string; requestedFrom?: number }
   | { status: "error"; message: string; missingKey: boolean };
 
 export function PriceChart({
@@ -104,7 +116,16 @@ export function PriceChart({
   livePrice?: number;
   onOpenSettings: () => void;
 }) {
-  const [range, setRange] = useState<ChartRangeId>("1A");
+  const [range, setRange] = useState<ChartRangeId | typeof CUSTOM_RANGE>("1A");
+  // Custom period: the applied dates, and the draft being edited in the date fields.
+  const today = new Date().toISOString().slice(0, 10);
+  const [customDates, setCustomDates] = useState<{ from: string; to: string } | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [draft, setDraft] = useState(() => ({
+    from: new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10),
+    to: new Date().toISOString().slice(0, 10),
+  }));
+  const [customError, setCustomError] = useState<string | null>(null);
   const [interval, setCandleSize] = useState<string>("auto");
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -122,6 +143,8 @@ export function PriceChart({
   const pmLineRef = useRef<IPriceLine | null>(null);
   const liveLineRef = useRef<IPriceLine | null>(null);
   const livePriceRef = useRef<number | null>(null);
+  // The "Agora" line only widens the price scale when the chart reaches today.
+  const reachesNowRef = useRef(true);
   const maSeriesRef = useRef(new Map<MovingAverageId, ISeriesApi<"Line">>());
   const indexByTimeRef = useRef(new Map<number, number>());
   const intradayRef = useRef(false);
@@ -173,7 +196,7 @@ export function PriceChart({
       autoscaleInfoProvider: (original: () => any) => {
         const res = original();
         const p = livePriceRef.current;
-        if (!res || !p) return res;
+        if (!res || !p || !reachesNowRef.current) return res;
         return { ...res, priceRange: { minValue: Math.min(res.priceRange.minValue, p), maxValue: Math.max(res.priceRange.maxValue, p) } };
       },
     });
@@ -185,7 +208,7 @@ export function PriceChart({
         priceLineVisible: false,
         lastValueVisible: true,
         crosshairMarkerVisible: false,
-        title: MOVING_AVERAGES[id].short,
+        title: "", // names go to the legend, so they never cover the candles
         visible: false,
         // Intraday: long averages can be far from today's prices; the scale follows the candles.
         autoscaleInfoProvider: (original: () => any) => (intradayRef.current ? null : original()),
@@ -236,7 +259,7 @@ export function PriceChart({
     setState({ status: "loading" });
     setHoverIndex(null);
     marketApi
-      .candles(symbol, range, interval)
+      .candles(symbol, range, interval, range === CUSTOM_RANGE && customDates ? customDates : undefined)
       .then((data) => {
         if (!cancelled) {
           setState({
@@ -246,6 +269,7 @@ export function PriceChart({
             stale: !!data.stale,
             source: data.source,
             fallbackFrom: data.fallbackFrom,
+            requestedFrom: data.requestedFrom,
           });
         }
       })
@@ -257,9 +281,16 @@ export function PriceChart({
     return () => {
       cancelled = true;
     };
-  }, [symbol, range, interval]);
+  }, [symbol, range, interval, customDates]);
 
-  const activeInterval = state.status === "ready" ? state.interval : CHART_RANGES[range].auto;
+  // Allowed candle sizes for the current period (custom: by its length).
+  const rangeConfig = useMemo(() => {
+    if (range !== CUSTOM_RANGE || !customDates) return CHART_RANGES[range === CUSTOM_RANGE ? "1A" : range];
+    const span = parseCustomRange(customDates.from, customDates.to, Date.now());
+    return "error" in span ? CHART_RANGES["1A"] : customRangeConfig(span.from, span.to);
+  }, [range, customDates]);
+
+  const activeInterval = state.status === "ready" ? state.interval : rangeConfig.auto;
   const intraday = isIntraday(activeInterval);
   // US stocks have a regular session; crypto trades 24/7.
   const hasSession = ASSET_TYPES[assetType].hours === "regular";
@@ -292,9 +323,10 @@ export function PriceChart({
     const out = new Map<MovingAverageId, Array<{ t: number; v: number }>>();
     if (ma.status !== "ready") return out;
     const times = candles.map((c) => c.t);
-    for (const id of enabledMAs) out.set(id, alignToCandles(ma.series[id] ?? [], times));
+    const size = state.status === "ready" ? INTERVAL_MS[state.interval] : undefined;
+    for (const id of enabledMAs) out.set(id, alignToCandles(ma.series[id] ?? [], times, size));
     return out;
-  }, [ma, candles, enabledMAs]);
+  }, [ma, candles, enabledMAs, state]);
 
   const toggleMA = (id: MovingAverageId) => {
     setEnabledMAs((current) => {
@@ -352,7 +384,7 @@ export function PriceChart({
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: "Meu PM",
+        title: "", // shown in the legend
       });
     }
 
@@ -375,6 +407,7 @@ export function PriceChart({
     const series = candleSeriesRef.current;
     if (!series) return;
     livePriceRef.current = livePrice && livePrice > 0 ? livePrice : null;
+    reachesNowRef.current = range !== CUSTOM_RANGE || !customDates || customDates.to >= new Date().toISOString().slice(0, 10);
     if (liveLineRef.current) {
       series.removePriceLine(liveLineRef.current);
       liveLineRef.current = null;
@@ -386,10 +419,10 @@ export function PriceChart({
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
-        title: "Agora",
+        title: "", // shown in the legend
       });
     }
-  }, [livePrice, candles, fullscreen]);
+  }, [livePrice, candles, fullscreen, range, customDates]);
 
   // Esc leaves full screen.
   useEffect(() => {
@@ -413,9 +446,10 @@ export function PriceChart({
   const prevClose = shownIndex !== null && shownIndex > 0 ? candles[shownIndex - 1].c : shown?.o ?? null;
   const candleChange = shown && prevClose ? { abs: shown.c - prevClose, pct: ((shown.c - prevClose) / prevClose) * 100 } : null;
 
-  const rangeConfig = CHART_RANGES[range];
   const source = state.status === "ready" ? state.source : null;
-  const rangeTitle = (id: ChartRangeId) => {
+  const brDate = (iso: string) => iso.split("-").reverse().join("/");
+  const rangeTitle = (id: ChartRangeId | typeof CUSTOM_RANGE) => {
+    if (id === CUSTOM_RANGE) return customDates ? `${brDate(customDates.from)} a ${brDate(customDates.to)}` : "Período personalizado";
     if (id === "1D" && !hasSession) return source === "massive" ? "Últimas 24 h disponíveis" : "Últimas 24 h";
     if (id === "MAX" && source === "massive") return "Máximo do plano grátis da Massive (2 anos)";
     return CHART_RANGES[id].title;
@@ -426,6 +460,23 @@ export function PriceChart({
     ? enabledMAs.map((id) => ({ id, point: (maAligned.get(id) ?? []).find((p) => p.t === candles[shownIndex]?.t) }))
     : [];
   const maMissing = ma.status === "ready" ? enabledMAs.filter((id) => !(ma.series[id]?.length)) : [];
+  // The period asked for starts before the data the provider has (e.g. 10A for a stock listed later).
+  const requestedFrom = state.status === "ready" ? state.requestedFrom : undefined;
+  const dataStartsLater =
+    range !== "MAX" && !!requestedFrom && candles.length > 0 && candles[0].t - requestedFrom > 7 * 86_400_000 ? candles[0].t : null;
+
+  const applyCustom = () => {
+    const span = parseCustomRange(draft.from, draft.to, Date.now());
+    if ("error" in span) {
+      setCustomError(span.error);
+      return;
+    }
+    setCustomError(null);
+    setCustomDates({ ...draft });
+    setRange(CUSTOM_RANGE);
+    setCandleSize("auto");
+    setCustomOpen(false);
+  };
 
   const content = (
     <div
@@ -455,6 +506,20 @@ export function PriceChart({
                 {CHART_RANGES[id].label}
               </button>
             ))}
+            <button
+              type="button"
+              aria-pressed={range === CUSTOM_RANGE}
+              aria-expanded={customOpen}
+              onClick={() => setCustomOpen((o) => !o)}
+              title={range === CUSTOM_RANGE ? `Período personalizado: ${rangeTitle(CUSTOM_RANGE)}` : "Período personalizado"}
+              aria-label="Período personalizado"
+              className={cn(
+                "px-2 py-1 rounded transition-all",
+                range === CUSTOM_RANGE ? "bg-tv-accent text-white" : "text-tv-text/60 hover:bg-white/5 hover:text-tv-text"
+              )}
+            >
+              <CalendarRange size={15} />
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -519,6 +584,45 @@ export function PriceChart({
           </div>
         </div>
 
+        {customOpen && (
+          <form
+            className="mx-4 mt-3 p-3 rounded border border-white/10 bg-white/[0.02] flex flex-wrap items-end gap-3 text-xs"
+            onSubmit={(e) => {
+              e.preventDefault();
+              applyCustom();
+            }}
+          >
+            <label className="flex flex-col gap-1">
+              <span className="uppercase text-[10px] font-bold text-tv-text/50">De</span>
+              <input
+                type="date"
+                className="tv-input py-1 text-xs"
+                min={CUSTOM_MIN_DATE}
+                max={today}
+                value={draft.from}
+                onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))}
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="uppercase text-[10px] font-bold text-tv-text/50">Até</span>
+              <input
+                type="date"
+                className="tv-input py-1 text-xs"
+                min={CUSTOM_MIN_DATE}
+                max={today}
+                value={draft.to}
+                onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
+                required
+              />
+            </label>
+            <button type="submit" className="tv-btn py-1 px-3 text-xs">
+              Aplicar
+            </button>
+            {customError && <span className="text-tv-down">{customError}</span>}
+          </form>
+        )}
+
         {/* Legend: values of the candle under the mouse (or the last one). */}
         <div className="px-4 pt-2 pb-1 min-h-[44px] text-xs font-mono flex flex-wrap items-center gap-x-4 gap-y-1">
           {shown ? (
@@ -553,14 +657,30 @@ export function PriceChart({
               title="Variação entre a abertura da primeira vela e o fechamento da última"
             >
               {periodChange.abs >= 0 ? "+" : ""}
-              {periodChange.abs.toFixed(2)} ({formatPercent(periodChange.pct)}) · {rangeTitle(range).toLowerCase()}
+              {periodChange.abs.toFixed(2)} ({formatPercent(periodChange.pct)}) ·{" "}
+              {range === CUSTOM_RANGE ? rangeTitle(range) : rangeTitle(range).toLowerCase()}
               {sessionFilter ? " · pregão regular" : ""}
+            </span>
+          )}
+          {dataStartsLater && (
+            <span className="w-full text-right font-sans text-amber-400">
+              Dados disponíveis a partir de {new Date(dataStartsLater).toLocaleDateString("pt-BR")}
             </span>
           )}
         </div>
 
-        {(maValues.length > 0 || maMissing.length > 0 || ma.status === "error") && (
+        {(maValues.length > 0 || maMissing.length > 0 || ma.status === "error" || !!livePrice || (hasPosition && avgCost > 0)) && (
           <div className="px-4 pb-1 text-xs font-mono flex flex-wrap gap-x-4 gap-y-1">
+            {!!livePrice && livePrice > 0 && (
+              <span style={{ color: COLORS.live }} title="Preço agora (linha pontilhada laranja)">
+                Agora {formatPrice(livePrice)}
+              </span>
+            )}
+            {hasPosition && avgCost > 0 && (
+              <span style={{ color: COLORS.accent }} title="Meu preço médio (linha tracejada azul)">
+                Meu PM {formatPrice(avgCost)}
+              </span>
+            )}
             {maValues.map(({ id, point }) =>
               point ? (
                 <span key={id} style={{ color: MOVING_AVERAGES[id].color }}>
@@ -635,8 +755,7 @@ export function PriceChart({
             {dataStale && lastCandle && (
               <span className="text-amber-400 font-semibold"> · Dados até {formatWhen(lastCandle.t, true)}</span>
             )}{" "}
-            · horário local · ▲ minhas compras ▼ minhas vendas (detalhes ao passar o mouse){hasPosition ? " · linha azul = meu preço médio" : ""}
-            {livePrice ? " · linha laranja = preço agora" : ""}
+            · horário local · ▲ minhas compras ▼ minhas vendas (detalhes ao passar o mouse) · nomes e valores das linhas na legenda acima
           </span>
           <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="hover:text-tv-text/70">
             Gráfico: TradingView Lightweight Charts™

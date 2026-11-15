@@ -5,8 +5,9 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import type { z } from "zod";
 import type { AppConfig } from "./config";
-import { CandleError, createCandleService, defaultMassiveFetch, type AlpacaKeys, type MassiveFetch } from "./candles";
+import { CandleError, createCandleService, defaultMassiveFetch, providerUrls, type AlpacaKeys, type MassiveFetch } from "./candles";
 import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
+import { coinbaseUsdAssets, type CryptoAsset } from "./providers/coinbase";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
@@ -468,6 +469,46 @@ export function createApp(
   }
 
   /** Crypto search (Massive reference data): USD pairs only, best matches first, cached 24 h. */
+  /** Coinbase's US dollar list, cached for 24 h (null while unavailable). */
+  let coinbaseList: { value: CryptoAsset[]; expiresAt: number } | null = null;
+  async function coinbaseAssets(): Promise<CryptoAsset[] | null> {
+    if (coinbaseList && coinbaseList.expiresAt > Date.now()) return coinbaseList.value;
+    try {
+      const value = await coinbaseUsdAssets(dataFetch, providerUrls().coinbase);
+      coinbaseList = { value, expiresAt: Date.now() + 24 * 60 * 60_000 };
+      return value;
+    } catch (error: any) {
+      console.warn(`[search] coinbase falhou (status ${Number(error?.status) || "-"})`);
+      return coinbaseList?.value ?? null; // stale list is better than nothing
+    }
+  }
+
+  function rankCrypto<T extends { description: string; displaySymbol: string; aliases?: string[] }>(found: T[], query: string) {
+    const qU = query.toUpperCase();
+    const qL = query.toLowerCase();
+    const names = (r: T) => [r.description, ...(r.aliases ?? [])].map((n) => n.toLowerCase());
+    const score = (r: T) =>
+      r.displaySymbol === qU ? 0 : names(r).includes(qL) ? 1 : names(r).some((n) => n.startsWith(qL)) ? 2 : r.displaySymbol.startsWith(qU) ? 3 : 4;
+    return [...found].sort((a, b) => score(a) - score(b) || a.description.length - b.description.length).slice(0, 20);
+  }
+
+  /** Crypto search: Coinbase (no key) first; Massive (key) when Coinbase finds nothing. */
+  async function searchCryptoAll(query: string, massiveKey: string | null) {
+    const list = await coinbaseAssets();
+    const qL = query.toLowerCase();
+    const qU = query.toUpperCase();
+    const hits = (list ?? []).filter(
+      (a) => a.displaySymbol.includes(qU) || [a.description, ...a.aliases].some((n) => n.toLowerCase().includes(qL))
+    );
+    if (hits.length > 0) {
+      const result = rankCrypto(hits, query).map(({ symbol, description, displaySymbol }) => ({ symbol, description, displaySymbol }));
+      return { count: result.length, result, source: "coinbase" };
+    }
+    if (massiveKey) return { ...(await searchCrypto(query, massiveKey)), source: "massive" };
+    if (list === null) throw new HttpError(502, "Não foi possível buscar criptos agora. Tente de novo em instantes.");
+    return { count: 0, result: [], source: "coinbase" };
+  }
+
   async function searchCrypto(query: string, massiveKey: string) {
     const path = `/v3/reference/tickers?market=crypto&search=${encodeURIComponent(query)}&active=true&limit=100`;
     let found: Array<{ symbol: string; description: string; displaySymbol: string }>;
@@ -485,11 +526,7 @@ export function createApp(
       if (error instanceof CandleError) throw new HttpError(error.status, error.message);
       throw error;
     }
-    const qU = query.toUpperCase();
-    const qL = query.toLowerCase();
-    const score = (r: { description: string; displaySymbol: string }) =>
-      r.displaySymbol === qU ? 0 : r.description.toLowerCase() === qL ? 1 : r.description.toLowerCase().startsWith(qL) ? 2 : r.displaySymbol.startsWith(qU) ? 3 : 4;
-    const result = [...found].sort((a, b) => score(a) - score(b) || a.description.length - b.description.length).slice(0, 20);
+    const result = rankCrypto(found, query);
     return { count: result.length, result };
   }
 
@@ -1097,15 +1134,7 @@ export function createApp(
       if (query.length > LIMITS.searchQueryMax) throw new HttpError(400, "Query too long");
 
       if (req.query.type === "crypto") {
-        const massiveKey = currentUser(res).massive_key;
-        if (!massiveKey) {
-          res.status(400).json({
-            error: "Configure a chave da Massive em Configurações → Conta para buscar criptos.",
-            code: "MASSIVE_KEY_MISSING",
-          });
-          return;
-        }
-        res.json(await searchCrypto(query, massiveKey));
+        res.json(await searchCryptoAll(query, currentUser(res).massive_key));
         return;
       }
 
@@ -1180,6 +1209,8 @@ export function createApp(
           interval: req.query.interval ? String(req.query.interval) : undefined,
           apiKey: user.massive_key,
           alpaca: alpacaKeysOf(user),
+          customFrom: req.query.from,
+          customTo: req.query.to,
         });
         res.setHeader("Cache-Control", "no-store");
         res.json({ symbol, range, ...result });
