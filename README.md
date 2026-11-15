@@ -58,7 +58,7 @@ O projeto permite:
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)
 - Conta: trocar senha (desconecta os outros aparelhos), trocar e-mail, trocar a chave da Finnhub (testada antes de salvar), sair de todos os aparelhos e ver as informações da conta
-- Gráfico estilo TradingView por ativo: velas e volume, períodos de 1 dia até todo o histórico (ações desde 2016, Bitcoin desde 2015), legenda com abertura/máxima/mínima/fechamento, tela cheia, **as suas compras e vendas marcadas**, a linha do seu preço médio e a linha do preço agora
+- Gráfico estilo TradingView por ativo: velas e volume, períodos de 1 dia a 10 anos, todo o histórico (ações desde 2016, Bitcoin desde 2015) ou um período personalizado (ícone de calendário), legenda com abertura/máxima/mínima/fechamento, tela cheia, **as suas compras e vendas marcadas**, a linha do seu preço médio e a linha do preço agora
 - Médias móveis de longo prazo com liga/desliga: 200 dias, 200 semanas e 50 meses
 - A fonte dos dados aparece sob o gráfico, com aviso quando os dados estão atrasados
 - Estatísticas: mínima e máxima de 52 semanas, volume médio, valor de mercado e beta
@@ -109,6 +109,7 @@ O app usa a API gratuita da [Finnhub](https://finnhub.io/) para cotações. Cada
 |---|---|---|---|---|
 | Criptomoedas | Coinbase (reserva: Binance) | tempo real | desde a listagem (BTC: 2015) | não precisa |
 | Ações dos EUA | Alpaca, plano grátis | 15 min, todas as bolsas | desde 2016 | Alpaca |
+| Busca de criptomoedas | Coinbase (reserva: Massive) | lista atualizada a cada 24 h | não se aplica | não precisa |
 | Reserva | Massive, plano grátis | até o dia anterior | 2 anos | Massive |
 
 **Chave da Alpaca (ações):**
@@ -116,7 +117,7 @@ O app usa a API gratuita da [Finnhub](https://finnhub.io/) para cotações. Cada
 2. No painel, em **API Keys**, clique em **Generate New Keys** e copie o API Key ID e o Secret Key.
 3. No app: Configurações → Conta → **Chave da Alpaca**. A chave é testada antes de ser salva e nunca vai para os backups.
 
-**Chave da Massive (opcional, busca de cripto e reserva):** crie uma conta grátis na
+**Chave da Massive (opcional, reserva):** crie uma conta grátis na
 [Massive](https://massive.com/) (antiga Polygon.io), copie a chave em Dashboard → Keys e salve em
 Configurações → Conta → **Chave da Massive**.
 

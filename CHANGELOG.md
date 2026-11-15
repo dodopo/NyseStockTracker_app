@@ -16,6 +16,23 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.10.0] - 2026-11-15
+
+Chart: cleaner labels, longer and custom periods, and crypto search without a key. No database migration.
+
+### Added
+- **Periods 3A, 5A and 10A** (weekly candles by default; daily or monthly on request).
+- **Custom period** (calendar icon next to the period buttons): "De" and "Até" dates, validated on the server (from 01/01/1990, not in the future, start before end). The candle size follows the length of the period; minute candles only for short periods. When the period starts before the available history, the chart says "Dados disponíveis a partir de DD/MM/AAAA".
+- **Crypto search without a key**: Coinbase's list of US dollar pairs with names (public, cached 24 h), with known aliases (ETH = "Ethereum"). The Massive key is now only a fallback. Crypto no longer needs any Massive key.
+- Tests: 99 (search, delisted coins, the new periods, date validation, cache per custom dates, averages in periods that end in the past).
+
+### Changed
+- **Line names no longer cover the candles.** "MM200D", "MM200S", "MM50M", "Agora" and "Meu PM" moved from inside the chart to the legend above it, each in its color with its value; the price axis keeps only the colored value boxes (like TradingView), also in full screen.
+
+### Fixed
+- In a period that ends in the past, the last candle showed today's moving-average values. Averages are now bounded to the end of the last candle.
+- In a period that ends in the past, the "Agora" line no longer stretches the price scale.
+
 ## [0.9.1] - 2026-11-15
 
 Chart cache fix found with real data. No database migration.

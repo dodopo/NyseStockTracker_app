@@ -84,7 +84,7 @@ export const DATA_SOURCES: Record<string, { label: string; delay: string }> = {
   massive: { label: "Massive", delay: "plano grátis: até o dia anterior, 2 anos de histórico" },
 };
 
-const INTERVAL_MS: Record<string, number> = {
+export const INTERVAL_MS: Record<string, number> = {
   "5m": 5 * 60_000,
   "15m": 15 * 60_000,
   "30m": 30 * 60_000,

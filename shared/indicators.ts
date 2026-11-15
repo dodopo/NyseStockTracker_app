@@ -65,11 +65,14 @@ export function movingAverage(daily: DailyClose[], id: MovingAverageId): SeriesP
  * Value of a daily series for each chart candle: the last point at or before the
  * candle's close (the start of the next candle). Works for any candle size.
  */
-export function alignToCandles(series: SeriesPoint[], candleTimes: number[]): Array<{ t: number; v: number }> {
+export function alignToCandles(series: SeriesPoint[], candleTimes: number[], candleSizeMs?: number): Array<{ t: number; v: number }> {
   const out: Array<{ t: number; v: number }> = [];
+  const n = candleTimes.length;
+  // The last candle closes one candle size later (a period may end in the past: never use later values).
+  const size = candleSizeMs ?? (n > 1 ? candleTimes[n - 1] - candleTimes[n - 2] : DAY);
   let j = -1;
-  for (let i = 0; i < candleTimes.length; i++) {
-    const boundary = i + 1 < candleTimes.length ? candleTimes[i + 1] : Number.POSITIVE_INFINITY;
+  for (let i = 0; i < n; i++) {
+    const boundary = i + 1 < n ? candleTimes[i + 1] : candleTimes[i] + size;
     while (j + 1 < series.length && series[j + 1].t < boundary) j++;
     if (j >= 0) out.push({ t: candleTimes[i], v: series[j].v });
   }

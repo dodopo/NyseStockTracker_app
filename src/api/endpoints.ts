@@ -62,9 +62,10 @@ export const portfolioApi = {
 };
 
 export const marketApi = {
-  candles: (symbol: string, range: string, interval = "auto") =>
+  candles: (symbol: string, range: string, interval = "auto", custom?: { from: string; to: string }) =>
     api<CandlesResponse>(
-      `/api/candles?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}`
+      `/api/candles?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}` +
+        (custom ? `&from=${encodeURIComponent(custom.from)}&to=${encodeURIComponent(custom.to)}` : "")
     ),
   indicators: (symbol: string, ids: string[], from: number) =>
     api<IndicatorsResponse>(

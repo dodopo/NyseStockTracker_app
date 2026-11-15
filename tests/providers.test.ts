@@ -312,6 +312,9 @@ describe("médias móveis", () => {
       { t: 1500, v: 2 },
       { t: 2600, v: 3 },
     ]);
+    // a period that ends in the past: the last candle does not take later values
+    const later = [...series, { t: 9000, v: 9 }];
+    expect(alignToCandles(later, [500, 1500, 2600], 500).at(-1)).toEqual({ t: 2600, v: 3 });
   });
 });
 
