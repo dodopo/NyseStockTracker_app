@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candleDate, filterRegularSession, groupTradesByCandle, nySessionDate } from "../shared/chartData";
+import { candleDate, chartTimeMs, filterRegularSession, groupTradesByCandle, nySessionDate } from "../shared/chartData";
 import { isChartStale, isUsMarketOpen } from "../shared/chartRanges";
 
 // 13 Nov 2026 is in EST (UTC-5): 09:30 NY = 14:30 UTC, 16:00 NY = 21:00 UTC.
@@ -106,5 +106,22 @@ describe("data da vela por tipo de ativo (v0.10.1)", () => {
 
   it("virada de ano: a semana que começa em 01/01/2024 (segunda) é de 2024", () => {
     expect(candleDate(Date.parse("2024-01-01T00:00:00Z"), true).slice(0, 4)).toBe("2024");
+  });
+});
+
+describe("horário do gráfico (v0.10.2)", () => {
+  // Real case 15/11: on the 1M chart the November mark appeared at 31/10 22:00 (local) labeled "out.".
+  const nov1utc = Date.parse("2026-11-01T00:00:00Z");
+  const brazil = 180; // UTC-3, as Date#getTimezoneOffset returns it
+
+  it("intradiário vai para o horário local: a virada de novembro em UTC ainda é 31/10 no Brasil", () => {
+    const shifted = new Date(chartTimeMs(nov1utc, true, brazil));
+    expect(shifted.toISOString().slice(0, 16)).toBe("2026-10-31T21:00");
+    // and local midnight of 01/11 (03:00 UTC) becomes the chart's 01/11 00:00: the month mark lands there
+    expect(new Date(chartTimeMs(Date.parse("2026-11-01T03:00:00Z"), true, brazil)).toISOString().slice(0, 16)).toBe("2026-11-01T00:00");
+  });
+
+  it("vela diária ou maior não muda: a data UTC já é a data da vela", () => {
+    expect(chartTimeMs(nov1utc, false, brazil)).toBe(nov1utc);
   });
 });

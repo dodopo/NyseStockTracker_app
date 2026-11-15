@@ -35,6 +35,17 @@ export function candleDate(ms: number, crypto: boolean) {
   return crypto ? new Date(ms).toISOString().slice(0, 10) : nySessionDate(ms);
 }
 
+/**
+ * Time handed to the chart library. The library places day and month marks in
+ * UTC, so intraday candles are shifted to local wall-clock time: marks then fall
+ * on local midnights and month starts (otherwise November started at 31/10 21:00
+ * in Brazil and was labeled "out."). Daily or longer candles are not shifted:
+ * their UTC date already is the candle date (see candleDate).
+ */
+export function chartTimeMs(ms: number, intraday: boolean, offsetMinutes = new Date(ms).getTimezoneOffset()) {
+  return intraday ? ms - offsetMinutes * 60_000 : ms;
+}
+
 /** Time zone in which a candle's date must be shown (see candleDate). */
 export function candleTimeZone(crypto: boolean) {
   return crypto ? "UTC" : "America/New_York";

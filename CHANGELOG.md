@@ -16,6 +16,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.10.2] - 2026-11-15
+
+Chart axis fixes, validated against real Coinbase data on every period. No database migration.
+
+### Fixed
+- **Month and day marks on intraday charts.** The chart library places day and month marks in UTC, and the labels were written in Brazil time, so on 1M the start of November (00:00 UTC = 31/10 21:00 in Brazil) was labeled "out.". Intraday candles are now handed to the chart in local wall-clock time: marks fall on local midnights and month starts, and every label is written in that same frame.
+- **Negative prices on the axis on tall screens.** The price area kept a 5% bottom margin, which on long periods starting near zero (BTC since 2015) reached −10,000. The margin is now 2%; the axis ends at 0.
+
+### Added
+- Tests: 104 (local-time chart marks around a month boundary).
+
 ## [0.10.1] - 2026-11-15
 
 Chart fixes found in real screenshots of v0.10.0. No database migration.
