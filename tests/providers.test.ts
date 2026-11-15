@@ -277,6 +277,48 @@ describe("v0.10.0: busca de cripto pela Coinbase e períodos", () => {
   });
 });
 
+describe("v0.11.0: câmbio USD/BRL", () => {
+  async function setup(answer: () => any) {
+    let calls = 0;
+    const dataFetch: DataFetch = async (url) => {
+      calls++;
+      expect(url).toBe("https://api.coinbase.com/v2/exchange-rates?currency=USD");
+      return answer();
+    };
+    const app = createApp(openDatabase(":memory:"), loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv), {
+      finnhubFetch: async () => ({ c: 100 }),
+      massiveFetch: async () => ({ results: [] }),
+      dataFetch,
+    });
+    const agent = request.agent(app);
+    await agent.post("/api/auth/register").send({ email: "ana@example.com", password: PASSWORD, confirmPassword: PASSWORD });
+    return { agent, calls: () => calls };
+  }
+
+  it("vem da Coinbase, sem chave, e fica guardado 10 min", async () => {
+    const { agent, calls } = await setup(() => ({ data: { currency: "USD", rates: { BRL: "5.66579", EUR: "0.92" } } }));
+    const a = await agent.get("/api/fx/usdbrl");
+    expect(a.status).toBe(200);
+    expect(a.body).toMatchObject({ pair: "USDBRL", rate: 5.66579, source: "coinbase" });
+    await agent.get("/api/fx/usdbrl");
+    expect(calls()).toBe(1);
+  });
+
+  it("resposta absurda ou Coinbase fora do ar: erro claro, nunca um câmbio errado", async () => {
+    const bad = await setup(() => ({ data: { rates: { BRL: "0.0001" } } }));
+    expect((await bad.agent.get("/api/fx/usdbrl")).status).toBe(502);
+    const down = await setup(() => {
+      throw new ProviderError(503, "down");
+    });
+    expect((await down.agent.get("/api/fx/usdbrl")).status).toBe(502);
+  });
+
+  it("sem sessão não responde", async () => {
+    const app = createApp(openDatabase(":memory:"), loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv), {});
+    expect((await request(app).get("/api/fx/usdbrl")).status).toBe(401);
+  });
+});
+
 describe("médias móveis", () => {
   const daily = (n: number, start = Date.UTC(2020, 0, 6, 5)) => Array.from({ length: n }, (_, i) => ({ t: start + i * DAY, c: i + 1 }));
 

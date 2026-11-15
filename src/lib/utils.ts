@@ -5,20 +5,25 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatCurrency(value: number) {
-  return new Intl.NumberFormat("en-US", {
+export type Currency = "USD" | "BRL";
+
+/** Dollars in the app's US format ($1,234.56); reais in the Brazilian format (R$ 1.234,56). */
+const LOCALE: Record<Currency, string> = { USD: "en-US", BRL: "pt-BR" };
+
+export function formatCurrency(value: number, currency: Currency = "USD") {
+  return new Intl.NumberFormat(LOCALE[currency], {
     style: "currency",
-    currency: "USD",
+    currency,
   }).format(value);
 }
 
 /** Price with 2 decimals, or up to 8 when the value needs them (small crypto prices). */
-export function formatPrice(value: number | string) {
+export function formatPrice(value: number | string, currency: Currency = "USD") {
   const n = Number(value);
   const needsMore = n !== 0 && Math.abs(n) < 1;
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat(LOCALE[currency], {
     style: "currency",
-    currency: "USD",
+    currency,
     minimumFractionDigits: 2,
     maximumFractionDigits: needsMore ? 8 : 2,
   }).format(n);

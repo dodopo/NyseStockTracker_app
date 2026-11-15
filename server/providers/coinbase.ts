@@ -76,3 +76,15 @@ export async function coinbaseUsdAssets(fetchJson: DataFetch, baseUrl: string): 
   }
   return out;
 }
+
+/**
+ * US dollar to Brazilian real, from Coinbase's public exchange rates (no key).
+ * Docs: GET https://api.coinbase.com/v2/exchange-rates?currency=USD
+ */
+export async function coinbaseUsdBrl(fetchJson: DataFetch, baseUrl: string): Promise<number> {
+  const raw = await fetchJson(`${baseUrl}/v2/exchange-rates?currency=USD`);
+  const rate = Number(raw?.data?.rates?.BRL);
+  // Sanity range: protects the portfolio values from a broken answer.
+  if (!Number.isFinite(rate) || rate < 1 || rate > 50) throw new ProviderError(502, "Coinbase: câmbio inválido");
+  return rate;
+}

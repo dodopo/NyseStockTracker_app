@@ -7,7 +7,7 @@ import type { z } from "zod";
 import type { AppConfig } from "./config";
 import { CandleError, createCandleService, defaultMassiveFetch, providerUrls, type AlpacaKeys, type MassiveFetch } from "./candles";
 import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
-import { coinbaseUsdAssets, type CryptoAsset } from "./providers/coinbase";
+import { coinbaseUsdAssets, coinbaseUsdBrl, type CryptoAsset } from "./providers/coinbase";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
@@ -1239,6 +1239,29 @@ export function createApp(
       throw error;
     }
   }
+
+  /** USD -> BRL for the consolidated view: Coinbase (no key), cached 10 min; stale value if Coinbase fails. */
+  let usdBrl: { rate: number; fetchedAt: string; expiresAt: number } | null = null;
+  app.get(
+    "/api/fx/usdbrl",
+    requireAuth,
+    wrap(async (_req, res) => {
+      const now = Date.now();
+      if (!usdBrl || usdBrl.expiresAt <= now) {
+        try {
+          const base = (process.env.COINBASE_RATES_URL?.trim() || "https://api.coinbase.com").replace(/\/+$/, "");
+          const rate = await coinbaseUsdBrl(dataFetch, base);
+          usdBrl = { rate, fetchedAt: new Date(now).toISOString(), expiresAt: now + 10 * 60_000 };
+        } catch (error: any) {
+          console.warn(`[fx] coinbase falhou (status ${Number(error?.status) || "-"})`);
+          if (!usdBrl) throw new HttpError(502, "Não foi possível obter o câmbio agora. Tente de novo em instantes.");
+          return res.json({ pair: "USDBRL", rate: usdBrl.rate, source: "coinbase", fetchedAt: usdBrl.fetchedAt, stale: true });
+        }
+      }
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ pair: "USDBRL", rate: usdBrl.rate, source: "coinbase", fetchedAt: usdBrl.fetchedAt });
+    })
+  );
 
   app.get(
     "/api/indicators",
