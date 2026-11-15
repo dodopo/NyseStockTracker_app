@@ -65,7 +65,7 @@ describe("serviço de velas (server/candles)", () => {
 
   it("recusa período inválido e vela incompatível com o período", async () => {
     const svc = createCandleService({ fetch: fakeMassive().fetch, now: () => NOW });
-    await expect(svc.getCandles({ symbol: "AAPL", range: "10A", apiKey: GOOD_MASSIVE })).rejects.toMatchObject({ status: 400 });
+    await expect(svc.getCandles({ symbol: "AAPL", range: "20A", apiKey: GOOD_MASSIVE })).rejects.toMatchObject({ status: 400 });
     await expect(
       svc.getCandles({ symbol: "AAPL", range: "MAX", interval: "5m", apiKey: GOOD_MASSIVE })
     ).rejects.toMatchObject({ status: 400 });

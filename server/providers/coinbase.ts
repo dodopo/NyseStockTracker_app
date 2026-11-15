@@ -50,3 +50,29 @@ export async function coinbaseCandles(req: CandleRequest, fetchJson: DataFetch, 
   const candles = cleanCandles(collected).filter((c) => c.t >= req.from - src.seconds * 1000 && c.t <= req.to);
   return src.aggregate ? aggregateCandles(candles, src.aggregate) : candles;
 }
+
+/** Well-known names Coinbase does not use (it calls ETH "Ether"). */
+const NAME_ALIASES: Record<string, string[]> = { ETH: ["Ethereum"] };
+
+export type CryptoAsset = { symbol: string; description: string; displaySymbol: string; aliases: string[] };
+
+/**
+ * Every crypto Coinbase trades against the US dollar, with its name, in our
+ * format (X:BTCUSD). Two public calls (products + currencies), no key.
+ */
+export async function coinbaseUsdAssets(fetchJson: DataFetch, baseUrl: string): Promise<CryptoAsset[]> {
+  const [products, currencies] = await Promise.all([fetchJson(`${baseUrl}/products`), fetchJson(`${baseUrl}/currencies`)]);
+  if (!Array.isArray(products) || !Array.isArray(currencies)) throw new ProviderError(502, "Coinbase: resposta inesperada");
+  const names = new Map<string, string>();
+  for (const c of currencies) if (typeof c?.id === "string" && typeof c?.name === "string") names.set(c.id, c.name);
+
+  const out: CryptoAsset[] = [];
+  for (const p of products) {
+    if (p?.quote_currency !== "USD" || p?.status !== "online" || p?.trading_disabled === true) continue;
+    const base = String(p?.base_currency ?? "").toUpperCase();
+    const symbol = `X:${base}USD`;
+    if (!/^X:[A-Z0-9]{2,15}USD$/.test(symbol)) continue;
+    out.push({ symbol, description: names.get(base) ?? base, displaySymbol: base, aliases: NAME_ALIASES[base] ?? [] });
+  }
+  return out;
+}

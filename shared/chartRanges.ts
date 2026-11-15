@@ -22,10 +22,52 @@ export const CHART_RANGES = {
   "3M": { label: "3M", title: "3 meses", auto: "1D", allowed: ["1h", "1D", "1W"] },
   YTD: { label: "YTD", title: "No ano", auto: "1D", allowed: ["1D", "1W"] },
   "1A": { label: "1A", title: "1 ano", auto: "1D", allowed: ["1D", "1W", "1M"] },
+  "3A": { label: "3A", title: "3 anos", auto: "1W", allowed: ["1D", "1W", "1M"] },
+  "5A": { label: "5A", title: "5 anos", auto: "1W", allowed: ["1D", "1W", "1M"] },
+  "10A": { label: "10A", title: "10 anos", auto: "1W", allowed: ["1D", "1W", "1M"] },
   MAX: { label: "Máx", title: "Todo o histórico disponível", auto: "1W", allowed: ["1D", "1W", "1M"] },
 } as const satisfies Record<string, { label: string; title: string; auto: ChartIntervalId; allowed: readonly ChartIntervalId[] }>;
 
 export type ChartRangeId = keyof typeof CHART_RANGES;
+
+/** Custom period ("De" / "Até"): dates as YYYY-MM-DD, interpreted in UTC. */
+export const CUSTOM_RANGE = "CUSTOM";
+export const CUSTOM_MIN_DATE = "1990-01-01";
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+
+/**
+ * Candle sizes for a custom period, by its length. Minute candles only for short
+ * periods, so a request never needs dozens of provider calls.
+ */
+export function customRangeConfig(fromMs: number, toMs: number): { auto: ChartIntervalId; allowed: ChartIntervalId[] } {
+  const days = (toMs - fromMs) / DAY_MS;
+  if (days <= 2) return { auto: "5m", allowed: ["5m", "15m", "30m", "1h"] };
+  if (days <= 7) return { auto: "30m", allowed: ["5m", "15m", "30m", "1h"] };
+  if (days <= 31) return { auto: "1h", allowed: ["30m", "1h", "1D"] };
+  if (days <= 92) return { auto: "1D", allowed: ["1h", "1D", "1W"] };
+  if (days <= 400) return { auto: "1D", allowed: ["1D", "1W"] };
+  return { auto: "1W", allowed: ["1D", "1W", "1M"] };
+}
+
+/**
+ * Validates a custom period. Returns UTC ms (end of the "Até" day) or an error
+ * message in Portuguese. `now` limits the end to today.
+ */
+export function parseCustomRange(from: unknown, to: unknown, now: number): { from: number; to: number } | { error: string } {
+  if (typeof from !== "string" || typeof to !== "string" || !DATE_RE.test(from) || !DATE_RE.test(to)) {
+    return { error: "Informe as datas no formato AAAA-MM-DD" };
+  }
+  const f = Date.parse(`${from}T00:00:00Z`);
+  const t = Date.parse(`${to}T00:00:00Z`) + DAY_MS - 1;
+  if (!Number.isFinite(f) || !Number.isFinite(t) || new Date(f).toISOString().slice(0, 10) !== from || new Date(t).toISOString().slice(0, 10) !== to) {
+    return { error: "Data inválida" };
+  }
+  if (from < CUSTOM_MIN_DATE) return { error: `A data inicial deve ser a partir de ${CUSTOM_MIN_DATE.split("-").reverse().join("/")}` };
+  if (f >= t || from > to) return { error: "A data inicial deve ser antes da final" };
+  if (f > now) return { error: "A data inicial não pode estar no futuro" };
+  return { from: f, to: Math.min(t, now) };
+}
 
 const INTRADAY: readonly string[] = ["5m", "15m", "30m", "1h"];
 

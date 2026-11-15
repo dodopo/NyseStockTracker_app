@@ -6,7 +6,7 @@
  * Every answer is cached. Massive calls keep the free-plan pace of 5 per minute.
  */
 
-import { CHART_RANGES, type ChartRangeId } from "../shared/chartRanges";
+import { CHART_RANGES, CUSTOM_RANGE, customRangeConfig, parseCustomRange, type ChartRangeId } from "../shared/chartRanges";
 import { isCryptoTicker } from "../shared/assetTypes";
 import { alpacaCandles, type AlpacaKeys } from "./providers/alpaca";
 import { binanceCandles } from "./providers/binance";
@@ -45,6 +45,9 @@ const RANGE_DAYS: Record<ChartRangeId, (now: number) => number> = {
   "3M": () => 92,
   YTD: (now) => Math.max(1, Math.ceil((now - Date.UTC(new Date(now).getUTCFullYear(), 0, 1)) / DAY)),
   "1A": () => 366,
+  "3A": () => 3 * 366,
+  "5A": () => 5 * 366,
+  "10A": () => 10 * 366,
   MAX: () => MAX_HISTORY_DAYS,
 };
 
@@ -59,7 +62,7 @@ export class CandleError extends Error {
 }
 
 /** Base URLs, overridable for a local mock (testing). */
-function providerUrls() {
+export function providerUrls() {
   const clean = (v: string | undefined, fallback: string) => (v?.trim() || fallback).replace(/\/+$/, "");
   return {
     alpaca: clean(process.env.ALPACA_DATA_URL, "https://data.alpaca.markets"),
@@ -96,7 +99,7 @@ export function createCandleService(options: {
   const maxEntries = options.maxCacheEntries ?? 300;
   const callsPerMinute = options.callsPerMinute ?? 5;
 
-  const cache = new Map<string, { candles: Candle[]; source: DataSource; fallbackFrom?: DataSource; expiresAt: number }>();
+  const cache = new Map<string, { candles: Candle[]; source: DataSource; fallbackFrom?: DataSource; requestedFrom: number; expiresAt: number }>();
   const callLog = new Map<string, number[]>(); // per API key: timestamps of recent calls
 
   function takeCallSlot(apiKey: string) {
@@ -158,7 +161,7 @@ export function createCandleService(options: {
     return value;
   }
 
-  function store(key: string, candles: Candle[], source: DataSource, interval: Interval, fallbackFrom?: DataSource) {
+  function store(key: string, candles: Candle[], source: DataSource, interval: Interval, requestedFrom: number, fallbackFrom?: DataSource) {
     cache.delete(key);
     if (cache.size >= maxEntries) {
       const oldest = cache.keys().next().value;
@@ -166,7 +169,7 @@ export function createCandleService(options: {
     }
     // An answer from a fallback is kept briefly, so the main provider is tried again soon.
     const ttl = fallbackFrom ? Math.min(cacheTtlMs(interval, source), FALLBACK_TTL_MS) : cacheTtlMs(interval, source);
-    cache.set(key, { candles, source, fallbackFrom, expiresAt: now() + ttl });
+    cache.set(key, { candles, source, fallbackFrom, requestedFrom, expiresAt: now() + ttl });
   }
 
   /** Server log line when a provider fails: status and a short reason, never URLs or keys. */
@@ -240,10 +243,21 @@ export function createCandleService(options: {
     /** Massive key (kept as `apiKey` for compatibility). */
     apiKey?: string | null;
     alpaca?: AlpacaKeys | null;
+    /** Custom period (range "CUSTOM"): dates as YYYY-MM-DD. */
+    customFrom?: unknown;
+    customTo?: unknown;
   }) {
-    if (!Object.hasOwn(CHART_RANGES, params.range)) throw new CandleError(400, "Período inválido");
+    const custom = params.range === CUSTOM_RANGE;
+    let customSpan: { from: number; to: number } | null = null;
+    if (custom) {
+      const parsed = parseCustomRange(params.customFrom, params.customTo, now());
+      if ("error" in parsed) throw new CandleError(400, parsed.error);
+      customSpan = parsed;
+    } else if (!Object.hasOwn(CHART_RANGES, params.range)) {
+      throw new CandleError(400, "Período inválido");
+    }
     const rangeId = params.range as ChartRangeId;
-    const range = CHART_RANGES[rangeId];
+    const range = customSpan ? customRangeConfig(customSpan.from, customSpan.to) : CHART_RANGES[rangeId];
 
     const intervalId: string = params.interval && params.interval !== "auto" ? params.interval : range.auto;
     if (!(range.allowed as readonly string[]).includes(intervalId) || !Object.hasOwn(INTERVALS, intervalId)) {
@@ -263,17 +277,24 @@ export function createCandleService(options: {
       );
     }
 
-    const key = `${params.symbol}|${params.range}|${intervalId}|${sources.join(">")}`;
+    const rangeKey = customSpan ? `${CUSTOM_RANGE}:${params.customFrom}:${params.customTo}` : params.range;
+    const key = `${params.symbol}|${rangeKey}|${intervalId}|${sources.join(">")}`;
     const cached = cache.get(key);
     if (cached && cached.expiresAt > now()) {
-      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, cached: true };
+      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, requestedFrom: cached.requestedFrom, cached: true };
     }
 
     const crypto = isCryptoTicker(params.symbol);
-    const to = now();
-    const days = crypto && rangeId === "1D" ? 2 : RANGE_DAYS[rangeId](to); // crypto trades 24/7
-    // "Máx": everything the provider has (Massive's free plan is capped at 2 years in fromMassive).
-    const from = rangeId === "MAX" ? 0 : to - days * DAY;
+    let from: number;
+    let to: number;
+    if (customSpan) {
+      ({ from, to } = customSpan);
+    } else {
+      to = now();
+      const days = crypto && rangeId === "1D" ? 2 : RANGE_DAYS[rangeId](to); // crypto trades 24/7
+      // "Máx": everything the provider has (Massive's free plan is capped at 2 years in fromMassive).
+      from = rangeId === "MAX" ? 0 : to - days * DAY;
+    }
 
     let firstError: unknown = null;
     let failed: DataSource | undefined; // first provider that failed (shown to the user)
@@ -303,13 +324,13 @@ export function createCandleService(options: {
       }
 
       const fallbackFrom = failed;
-      store(key, candles, source, interval, fallbackFrom);
-      return { interval: intervalId, candles, source, fallbackFrom, cached: false };
+      store(key, candles, source, interval, from, fallbackFrom);
+      return { interval: intervalId, candles, source, fallbackFrom, requestedFrom: from, cached: false };
     }
 
     // Every provider failed: serve stale data if we have it.
     if (cached) {
-      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, cached: true, stale: true };
+      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, requestedFrom: cached.requestedFrom, cached: true, stale: true };
     }
     if (firstError instanceof CandleError) throw firstError;
     throw new CandleError(502, "Não foi possível consultar o histórico agora. Tente de novo em instantes.");

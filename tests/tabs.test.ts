@@ -175,7 +175,10 @@ describe("cripto: cotação, busca, estatísticas e gráfico", () => {
           : { results: [{ t: 1, o: 1, h: 1, l: 1, c: 1 }] },
     });
     const agent = await login(app);
-    expect((await agent.get("/api/search?q=ethereum&type=crypto")).body.code).toBe("MASSIVE_KEY_MISSING");
+    // Coinbase is offline in tests and there is no Massive key: a clear error, no key demanded
+    const offline = await agent.get("/api/search?q=ethereum&type=crypto");
+    expect(offline.status).toBe(502);
+    expect(offline.body.error).toMatch(/buscar criptos/);
     await agent.post("/api/auth/massive-key").send({ apiKey: MASSIVE_KEY });
 
     const res = await agent.get("/api/search?q=ethereum&type=crypto");
