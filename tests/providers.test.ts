@@ -124,6 +124,69 @@ describe("provedores de velas", () => {
   });
 });
 
+describe("cache de velas por chave (v0.9.1)", () => {
+  const massiveDaily = async () => ({ results: [{ t: NOW - DAY, o: 1, h: 2, l: 0.5, c: 1.5, v: 10 }] });
+
+  it("chave da Alpaca salva depois de abrir o gráfico vale na hora (não fica presa no cache da Massive)", async () => {
+    const al = fakeAlpaca();
+    const svc = createCandleService({ fetch: massiveDaily, dataFetch: al.fetch, now: () => NOW });
+    const before = await svc.getCandles({ symbol: "AAPL", range: "1A", interval: "1D", apiKey: "massivekey123456" });
+    expect(before.source).toBe("massive");
+    const after = await svc.getCandles({ symbol: "AAPL", range: "1A", interval: "1D", apiKey: "massivekey123456", alpaca: { keyId: KEY_ID, secret: SECRET } });
+    expect(after.source).toBe("alpaca");
+    expect(after.cached).toBe(false);
+  });
+
+  it("usuário sem chave não recebe o gráfico que outro usuário deixou no cache", async () => {
+    const al = fakeAlpaca();
+    const svc = createCandleService({ fetch: massiveDaily, dataFetch: al.fetch, now: () => NOW });
+    await svc.getCandles({ symbol: "AAPL", range: "1A", alpaca: { keyId: KEY_ID, secret: SECRET } });
+    await expect(svc.getCandles({ symbol: "AAPL", range: "1A" })).rejects.toMatchObject({ code: "CHART_KEY_MISSING" });
+  });
+
+  it("Alpaca fora do ar: a reserva responde, o aviso vai junto e a Alpaca é tentada de novo em 5 min", async () => {
+    let t = NOW;
+    let alpacaDown = true;
+    const al = fakeAlpaca();
+    const dataFetch: DataFetch = async (url, headers) => {
+      if (alpacaDown) throw new ProviderError(500, "HTTP 500");
+      return al.fetch(url, headers);
+    };
+    const warn = console.warn;
+    const logs: string[] = [];
+    console.warn = (msg: string) => logs.push(msg);
+    try {
+      const svc = createCandleService({ fetch: massiveDaily, dataFetch, now: () => t });
+      const keys = { apiKey: "massivekey123456", alpaca: { keyId: KEY_ID, secret: SECRET } };
+      const first = await svc.getCandles({ symbol: "AAPL", range: "1A", interval: "1D", ...keys });
+      expect(first).toMatchObject({ source: "massive", fallbackFrom: "alpaca" });
+      expect(logs.join("\n")).toContain("alpaca falhou para AAPL (status 500)");
+      expect(logs.join("\n")).not.toContain(SECRET);
+
+      alpacaDown = false;
+      t += 4 * 60_000; // still inside the short fallback cache
+      expect((await svc.getCandles({ symbol: "AAPL", range: "1A", interval: "1D", ...keys })).source).toBe("massive");
+      t += 2 * 60_000; // past 5 minutes: Alpaca again
+      const back = await svc.getCandles({ symbol: "AAPL", range: "1A", interval: "1D", ...keys });
+      expect(back.source).toBe("alpaca");
+      expect(back.fallbackFrom).toBeUndefined();
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  it("cripto que a Coinbase não lista (404) vai para a Binance sem aviso de falha", async () => {
+    const dataFetch: DataFetch = async (url) => {
+      if (url.includes("coinbase")) throw new ProviderError(404, "NotFound");
+      return [[NOW, "1", "2", "0.5", "1.5", "10"]];
+    };
+    const svc = createCandleService({ fetch: async () => ({}), dataFetch, now: () => NOW });
+    const r = await svc.getCandles({ symbol: "X:PEPEUSD", range: "1A", interval: "1D" });
+    expect(r.source).toBe("binance");
+    expect(r.fallbackFrom).toBeUndefined();
+  });
+});
+
 describe("médias móveis", () => {
   const daily = (n: number, start = Date.UTC(2020, 0, 6, 5)) => Array.from({ length: n }, (_, i) => ({ t: start + i * DAY, c: i + 1 }));
 

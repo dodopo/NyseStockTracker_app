@@ -16,6 +16,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.9.1] - 2026-11-15
+
+Chart cache fix found with real data. No database migration.
+
+### Fixed
+- **A newly saved key now takes effect immediately.** The chart cache was keyed only by asset, period and candle size, so a chart loaded through Massive before the Alpaca key was saved kept being served for up to 6 hours (seen on 15/11: AAPL showed "Dados: Massive" and "histórico insuficiente" for the 200-week and 50-month averages until the service was restarted). The cache key now includes the providers available to the user.
+- **No chart without a key, not even a cached one.** The key check now runs before the cache lookup, so a user without keys never receives candles cached for another user.
+
+### Added
+- **Fallbacks are visible.** When the main provider fails and another one answers, the chart footer says so (e.g. "Alpaca indisponível agora, usando a reserva"), the server logs the failure (status and short reason, never URLs or keys), and the fallback answer is cached for only 5 minutes so the main provider is tried again soon. A crypto coin that Coinbase simply does not list (404) still goes to Binance without a warning.
+- Tests: 96 (4 new for the cache key, the key check order, fallback notice and retry, and unlisted coins).
+
 ## [0.9.0] - 2026-11-14
 
 Better chart data and long-term moving averages. Database migration v6 is **additive** (two new columns in `users`); rolling back to v0.8.0 works on the same database.
