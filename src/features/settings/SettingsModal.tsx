@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useId, useState } from "react";
-import { CandlestickChart, CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
+import { BarChart3, CandlestickChart, CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
 import { accountApi, authApi, portfolioApi, type AccountInfo } from "../../api/endpoints";
 import { ApiError, errorMessage } from "../../api/client";
 import { cn } from "../../lib/utils";
 import {
+  alpacaKeySchema,
   changeEmailSchema,
   changePasswordSchema,
   finnhubKeySchema,
@@ -283,7 +284,7 @@ function SuccessMessage({ children }: { children: React.ReactNode }) {
   );
 }
 
-type AccountPanel = "password" | "email" | "apikey" | "massive" | null;
+type AccountPanel = "password" | "email" | "apikey" | "alpaca" | "massive" | null;
 
 function AccountCard({
   user,
@@ -338,7 +339,8 @@ function AccountCard({
     { id: "password" as const, icon: Lock, label: "Trocar senha" },
     { id: "email" as const, icon: Mail, label: "Trocar e-mail" },
     { id: "apikey" as const, icon: KeyRound, label: "Trocar API key" },
-    { id: "massive" as const, icon: CandlestickChart, label: "Chave dos gráficos" },
+    { id: "alpaca" as const, icon: BarChart3, label: "Chave da Alpaca" },
+    { id: "massive" as const, icon: CandlestickChart, label: "Chave da Massive" },
   ];
 
   return (
@@ -349,12 +351,13 @@ function AccountCard({
         <InfoRow label="Conta criada em" value={formatDateTime(info?.createdAt ?? null)} />
         <InfoRow label="Último acesso" value={formatDateTime(info?.lastLoginAt ?? null)} />
         <InfoRow label="Chave da Finnhub" value={info?.finnhubKeyHint ?? "—"} mono />
-        <InfoRow label="Chave da Massive (gráficos)" value={info?.massiveKeyHint ?? "não configurada"} mono />
+        <InfoRow label="Chave da Alpaca (ações)" value={info?.alpacaKeyHint ?? "não configurada"} mono />
+        <InfoRow label="Chave da Massive (reserva)" value={info?.massiveKeyHint ?? "não configurada"} mono />
         <InfoRow label="Sessões ativas" value={info ? String(info.activeSessions) : "—"} />
         <InfoRow label="Versão do app" value={info ? `v${info.appVersion}` : "—"} mono />
       </dl>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
         {buttons.map(({ id, icon: Icon, label }) => (
           <button
             key={id}
@@ -392,6 +395,15 @@ function AccountCard({
               onDone={(updated) => {
                 onUserChanged(updated);
                 done("Chave da Finnhub testada e salva.");
+              }}
+            />
+          )}
+          {panel === "alpaca" && (
+            <AlpacaKeyForm
+              currentHint={info?.alpacaKeyHint ?? null}
+              onDone={(updated) => {
+                onUserChanged(updated);
+                done("Chave da Alpaca testada e salva. Os gráficos de ações já usam a Alpaca.");
               }}
             />
           )}
@@ -554,7 +566,7 @@ const KEY_PROVIDERS = {
   },
   massive: {
     name: "Massive",
-    purpose: "histórico para os gráficos (plano grátis: 2 anos, 5 consultas por minuto)",
+    purpose: "busca de criptomoedas e reserva dos gráficos (plano grátis: até o dia anterior, 2 anos, 5 consultas por minuto)",
     signupUrl: "https://massive.com/dashboard",
     schema: massiveKeySchema,
     save: authApi.saveMassiveKey,
@@ -626,6 +638,75 @@ function ChangeApiKeyForm({
       <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
         {saving ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
         {saving ? `Testando na ${cfg.name}...` : "Testar e salvar"}
+      </button>
+      <ErrorMessage>{error}</ErrorMessage>
+    </form>
+  );
+}
+
+/** Alpaca has two values: the key ID and the secret. Both are tested before saving. */
+function AlpacaKeyForm({ currentHint, onDone }: { currentHint: string | null; onDone: (user: AuthUser) => void }) {
+  const [keyId, setKeyId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const idField = useId();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = alpacaKeySchema.safeParse({ keyId, secret });
+    if (!check.success) {
+      setError(firstIssue(check.error));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await authApi.saveAlpacaKey(check.data.keyId, check.data.secret);
+      setKeyId("");
+      setSecret("");
+      onDone(data.user);
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível salvar a chave."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div className="text-sm text-tv-text/70">
+        Chave atual da Alpaca: <span className="font-mono text-tv-text">{currentHint ?? "nenhuma"}</span>
+        <div className="text-xs text-tv-text/50 mt-1">
+          Usada para os gráficos de ações: todas as bolsas dos EUA com 15 min de atraso e histórico desde 2016 (plano grátis).
+        </div>
+      </div>
+      <div className="space-y-1">
+        <FieldLabel htmlFor={idField}>API Key ID</FieldLabel>
+        <input
+          id={idField}
+          type="text"
+          className="tv-input w-full font-mono"
+          value={keyId}
+          onChange={(e) => setKeyId(e.target.value)}
+          placeholder="Começa com PK"
+          autoComplete="off"
+          spellCheck={false}
+          required
+        />
+      </div>
+      <PasswordInput label="Secret Key" value={secret} onChange={setSecret} autoComplete="off" />
+      <p className="text-xs text-tv-text/50">
+        A chave é testada na Alpaca antes de ser salva; se não funcionar, nada muda. Ela fica só neste servidor e nunca vai
+        para os backups. Gere em{" "}
+        <a href="https://app.alpaca.markets" target="_blank" rel="noreferrer noopener" className="text-tv-accent hover:underline">
+          app.alpaca.markets
+        </a>{" "}
+        (conta Paper Trading → API Keys → Generate New Keys).
+      </p>
+      <button type="submit" disabled={saving} className="tv-btn flex items-center gap-2">
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
+        {saving ? "Testando na Alpaca..." : "Testar e salvar"}
       </button>
       <ErrorMessage>{error}</ErrorMessage>
     </form>

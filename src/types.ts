@@ -38,6 +38,7 @@ export type AuthUser = {
   hasPassword: boolean;
   hasFinnhubKey: boolean;
   hasMassiveKey: boolean;
+  hasAlpacaKey?: boolean;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
@@ -94,6 +95,14 @@ export type CandlesResponse = {
   candles: Candle[];
   cached?: boolean;
   stale?: boolean;
+};
+
+export type IndicatorsResponse = {
+  symbol: string;
+  source: string;
+  firstDay: number | null;
+  days: number;
+  series: Partial<Record<string, Array<{ t: number; v: number }>>>;
 };
 
 export type StockStats = {

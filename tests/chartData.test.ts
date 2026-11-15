@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { filterRegularSession, groupTradesByCandle, nySessionDate } from "../shared/chartData";
+import { isChartStale, isUsMarketOpen } from "../shared/chartRanges";
 
 // 13 Nov 2026 is in EST (UTC-5): 09:30 NY = 14:30 UTC, 16:00 NY = 21:00 UTC.
 const at = (utc: string) => ({ t: Date.parse(utc), o: 1, h: 1, l: 1, c: 1, v: 1 });
@@ -61,5 +62,28 @@ describe("operações por vela", () => {
 
   it("data de pregão é a de NY, não a UTC", () => {
     expect(nySessionDate(Date.parse("2026-11-14T00:55:00Z"))).toBe("2026-11-13");
+  });
+});
+
+describe("aviso de dados atrasados", () => {
+  const fri15h = Date.parse("2026-11-13T20:00:00Z"); // Friday 15:00 New York
+  const sat = Date.parse("2026-11-14T23:50:00Z");
+
+  it("pregão aberto só em dia útil, das 9h30 às 16h de NY", () => {
+    expect(isUsMarketOpen(fri15h)).toBe(true);
+    expect(isUsMarketOpen(Date.parse("2026-11-13T14:29:00Z"))).toBe(false); // 09:29
+    expect(isUsMarketOpen(sat)).toBe(false);
+  });
+
+  it("cripto: vela de ontem é atraso (caso real da Massive grátis); vela do minuto não é", () => {
+    expect(isChartStale(Date.parse("2026-11-13T23:55:00Z"), "5m", true, sat)).toBe(true);
+    expect(isChartStale(sat - 5 * 60_000, "5m", true, sat)).toBe(false);
+    expect(isChartStale(Date.parse("2026-11-14T00:00:00Z"), "1D", true, sat)).toBe(false); // today's daily candle
+  });
+
+  it("ações: 15 min de atraso no pregão é normal; vela de ontem no pregão é atraso; fim de semana não avisa", () => {
+    expect(isChartStale(fri15h - 20 * 60_000, "5m", false, fri15h)).toBe(false);
+    expect(isChartStale(Date.parse("2026-11-12T05:00:00Z"), "1D", false, fri15h)).toBe(true);
+    expect(isChartStale(Date.parse("2026-11-14T00:55:00Z"), "5m", false, sat)).toBe(false);
   });
 });
