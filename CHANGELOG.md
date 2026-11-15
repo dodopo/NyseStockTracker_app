@@ -16,6 +16,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.10.3] - 2026-11-15
+
+No database migration.
+
+### Added
+- **Full screen shows the asset.** The page header disappears in full screen, so the chart now shows the ticker, the asset name and the live price with its change at the top (e.g. "AAPL · APPLE INC · $356.27 · +0.39%"). The full-screen dialog is also announced with the displayed symbol ("BTC", not "X:BTCUSD").
+
+### Notes
+- Final validation of the charts on 15/11 with real data: AAPL (Alpaca) and BTC (Coinbase) on every period and on custom periods. The "Estendido" toggle was checked on the test server (regular session 09:30–15:55 New York; extended 04:00–19:55).
+
 ## [0.10.2] - 2026-11-15
 
 Chart axis fixes, validated against real Coinbase data on every period. No database migration.

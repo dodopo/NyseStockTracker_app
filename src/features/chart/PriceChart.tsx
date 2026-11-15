@@ -40,7 +40,7 @@ import {
 } from "../../../shared/chartRanges";
 import { MOVING_AVERAGES, MOVING_AVERAGE_IDS, alignToCandles, daysNeeded, type MovingAverageId } from "../../../shared/indicators";
 import { candleTimeZone, chartTimeMs, filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
-import { ASSET_TYPES, type AssetType } from "../../../shared/assetTypes";
+import { ASSET_TYPES, displaySymbol, type AssetType } from "../../../shared/assetTypes";
 
 const COLORS = {
   bg: "#1e222d",
@@ -111,6 +111,8 @@ export function PriceChart({
   avgCost,
   hasPosition,
   livePrice,
+  liveChangePct,
+  name,
   onOpenSettings,
 }: {
   symbol: string;
@@ -120,6 +122,10 @@ export function PriceChart({
   hasPosition: boolean;
   /** Current quote (Finnhub/Binance), drawn as the "Agora" line. */
   livePrice?: number;
+  /** Change of the live quote (%), shown with the price in full screen. */
+  liveChangePct?: number;
+  /** Asset name (e.g. "APPLE INC"), shown in full screen. */
+  name?: string;
   onOpenSettings: () => void;
 }) {
   const [range, setRange] = useState<ChartRangeId | typeof CUSTOM_RANGE>("1A");
@@ -509,9 +515,26 @@ export function PriceChart({
       className={cn(fullscreen && "fixed inset-0 z-[95] bg-tv-bg p-4 flex flex-col")}
       role={fullscreen ? "dialog" : undefined}
       aria-modal={fullscreen ? true : undefined}
-      aria-label={fullscreen ? `Gráfico de ${symbol} em tela cheia` : undefined}
+      aria-label={fullscreen ? `Gráfico de ${displaySymbol(symbol)} em tela cheia` : undefined}
     >
       <Card className={cn("p-0 overflow-hidden", fullscreen && "flex-1 flex flex-col")}>
+        {/* Full screen hides the page header: show which asset this is. */}
+        {fullscreen && (
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 pt-4" data-testid="chart-fullscreen-title">
+            <div className="flex items-baseline gap-3 min-w-0">
+              <h2 className="text-2xl font-bold">{displaySymbol(symbol)}</h2>
+              {name && <span className="text-sm text-tv-text/60 truncate">{name}</span>}
+            </div>
+            {!!livePrice && livePrice > 0 && (
+              <div className="flex items-baseline gap-2 font-mono">
+                <span className="text-xl">{formatPrice(livePrice)}</span>
+                {liveChangePct !== undefined && (
+                  <span className={cn("text-sm", liveChangePct >= 0 ? "text-tv-up" : "text-tv-down")}>{formatPercent(liveChangePct)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-4">
           <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Período do gráfico">
             {(Object.keys(CHART_RANGES) as ChartRangeId[]).map((id) => (
