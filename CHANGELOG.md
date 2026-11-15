@@ -16,6 +16,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.11.0] - 2026-11-15
+
+Consolidated view: filter by tab, allocation chart and values in reais. No database migration.
+
+### Added
+- **Filter by tab**: chips above the consolidated view ("Todas" plus one per tab, multiple selection). Cards, allocation and table follow the selection; selecting every tab is the same as "Todas".
+- **Allocation donut** by market value of open positions, "Por aba" (tab colors) or "Por ativo"; slices under 3% are grouped in "Outros". Drawn in plain SVG (no chart library added).
+- **USD | BRL** toggle: values converted at the current dollar rate from Coinbase's public exchange rates (no key, cached 10 min, refreshed while open), with the rate and its time shown ("US$ 1 = R$ 5,6658 · Coinbase, 12:42"). If the rate is unavailable the view stays in dollars and says so; an out-of-range rate is never used. `GET /api/fx/usdbrl`; `COINBASE_RATES_URL` (advanced/testing).
+- Filter, currency and allocation choices are remembered in the browser.
+- `shared/allocation.ts` (filter and slice rules) and `src/components/Donut.tsx` (reusable).
+- Tests: 113 (filter, slices, exchange rate: source, cache, invalid or unavailable rate, login required).
+
+### Notes
+- Reais are a display conversion at today's rate (useful for net worth). Income tax uses the Central Bank PTAX rate of specific dates; that is kept for a later version.
+
 ## [0.10.3] - 2026-11-15
 
 No database migration.

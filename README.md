@@ -54,6 +54,7 @@ O projeto permite:
 - Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA ou Cripto)
 - Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico em tempo real e estatísticas
 - Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
+- Consolidado com filtro por aba, gráfico de alocação (por aba ou por ativo) e valores em dólar ou em reais (câmbio do momento pela Coinbase)
 - Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)

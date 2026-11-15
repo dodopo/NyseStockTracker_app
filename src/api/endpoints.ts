@@ -71,6 +71,7 @@ export const marketApi = {
     api<IndicatorsResponse>(
       `/api/indicators?symbol=${encodeURIComponent(symbol)}&ma=${encodeURIComponent(ids.join(","))}&from=${Math.floor(from)}`
     ),
+  usdBrl: () => api<{ pair: string; rate: number; source: string; fetchedAt: string; stale?: boolean }>("/api/fx/usdbrl"),
   stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
 };
 
