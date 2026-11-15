@@ -34,6 +34,7 @@ export const INTERVALS: Record<string, Interval> = {
 };
 
 const DAY = 86_400_000;
+const FALLBACK_TTL_MS = 5 * 60_000;
 const MAX_HISTORY_DAYS = 730; // free plan: 2 years
 
 /** Lookback in days for each period button (sizes/labels live in shared/chartRanges). */
@@ -95,7 +96,7 @@ export function createCandleService(options: {
   const maxEntries = options.maxCacheEntries ?? 300;
   const callsPerMinute = options.callsPerMinute ?? 5;
 
-  const cache = new Map<string, { candles: Candle[]; source: DataSource; expiresAt: number }>();
+  const cache = new Map<string, { candles: Candle[]; source: DataSource; fallbackFrom?: DataSource; expiresAt: number }>();
   const callLog = new Map<string, number[]>(); // per API key: timestamps of recent calls
 
   function takeCallSlot(apiKey: string) {
@@ -157,13 +158,22 @@ export function createCandleService(options: {
     return value;
   }
 
-  function store(key: string, candles: Candle[], source: DataSource, interval: Interval) {
+  function store(key: string, candles: Candle[], source: DataSource, interval: Interval, fallbackFrom?: DataSource) {
     cache.delete(key);
     if (cache.size >= maxEntries) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
     }
-    cache.set(key, { candles, source, expiresAt: now() + cacheTtlMs(interval, source) });
+    // An answer from a fallback is kept briefly, so the main provider is tried again soon.
+    const ttl = fallbackFrom ? Math.min(cacheTtlMs(interval, source), FALLBACK_TTL_MS) : cacheTtlMs(interval, source);
+    cache.set(key, { candles, source, fallbackFrom, expiresAt: now() + ttl });
+  }
+
+  /** Server log line when a provider fails: status and a short reason, never URLs or keys. */
+  function logProviderFailure(source: DataSource, symbol: string, error: any) {
+    const status = Number(error?.status) || "-";
+    const reason = String(error?.message ?? error).replace(/https?:\/\/\S+/g, "[url]").slice(0, 120);
+    console.warn(`[candles] ${source} falhou para ${symbol} (status ${status}): ${reason}`);
   }
 
   async function fromMassive(symbol: string, interval: Interval, from: number, to: number, apiKey: string) {
@@ -242,12 +252,8 @@ export function createCandleService(options: {
     const interval = INTERVALS[intervalId];
     const keys = { massive: params.apiKey, alpaca: params.alpaca };
 
-    const key = `${params.symbol}|${params.range}|${intervalId}`;
-    const cached = cache.get(key);
-    if (cached && cached.expiresAt > now()) {
-      return { interval: intervalId, candles: cached.candles, source: cached.source, cached: true };
-    }
-
+    // The providers this user can use come first: no key, no chart (not even a cached one),
+    // and a new key changes the chain, so it takes effect immediately.
     const sources = chain(params.symbol, keys);
     if (sources.length === 0) {
       throw new CandleError(
@@ -257,6 +263,12 @@ export function createCandleService(options: {
       );
     }
 
+    const key = `${params.symbol}|${params.range}|${intervalId}|${sources.join(">")}`;
+    const cached = cache.get(key);
+    if (cached && cached.expiresAt > now()) {
+      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, cached: true };
+    }
+
     const crypto = isCryptoTicker(params.symbol);
     const to = now();
     const days = crypto && rangeId === "1D" ? 2 : RANGE_DAYS[rangeId](to); // crypto trades 24/7
@@ -264,12 +276,19 @@ export function createCandleService(options: {
     const from = rangeId === "MAX" ? 0 : to - days * DAY;
 
     let firstError: unknown = null;
+    let failed: DataSource | undefined; // first provider that failed (shown to the user)
     for (const source of sources) {
       let candles: Candle[];
       try {
         candles = await fetchFrom(source, { symbol: params.symbol, interval: intervalId as IntervalId, from, to }, interval, keys);
       } catch (error) {
         firstError ??= error;
+        // A keyless crypto provider answering 404/400 just does not list this coin: normal, not a failure.
+        const notListed = (source === "coinbase" || source === "binance") && [400, 404].includes(Number((error as any)?.status));
+        if (!notListed) {
+          failed ??= source;
+          logProviderFailure(source, params.symbol, error);
+        }
         continue; // next provider
       }
       if (candles.length === 0 && source !== sources[sources.length - 1]) continue;
@@ -283,12 +302,15 @@ export function createCandleService(options: {
             candles.filter((c) => nyDate(c.t) === nyDate(lastT));
       }
 
-      store(key, candles, source, interval);
-      return { interval: intervalId, candles, source, cached: false };
+      const fallbackFrom = failed;
+      store(key, candles, source, interval, fallbackFrom);
+      return { interval: intervalId, candles, source, fallbackFrom, cached: false };
     }
 
     // Every provider failed: serve stale data if we have it.
-    if (cached) return { interval: intervalId, candles: cached.candles, source: cached.source, cached: true, stale: true };
+    if (cached) {
+      return { interval: intervalId, candles: cached.candles, source: cached.source, fallbackFrom: cached.fallbackFrom, cached: true, stale: true };
+    }
     if (firstError instanceof CandleError) throw firstError;
     throw new CandleError(502, "Não foi possível consultar o histórico agora. Tente de novo em instantes.");
   }

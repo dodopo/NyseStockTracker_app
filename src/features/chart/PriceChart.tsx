@@ -83,7 +83,7 @@ function formatWhen(ms: number, intraday: boolean) {
 
 type LoadState =
   | { status: "loading" }
-  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean; source: string }
+  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean; source: string; fallbackFrom?: string }
   | { status: "error"; message: string; missingKey: boolean };
 
 export function PriceChart({
@@ -239,7 +239,14 @@ export function PriceChart({
       .candles(symbol, range, interval)
       .then((data) => {
         if (!cancelled) {
-          setState({ status: "ready", interval: data.interval, candles: data.candles, stale: !!data.stale, source: data.source });
+          setState({
+            status: "ready",
+            interval: data.interval,
+            candles: data.candles,
+            stale: !!data.stale,
+            source: data.source,
+            fallbackFrom: data.fallbackFrom,
+          });
         }
       })
       .catch((error) => {
@@ -618,6 +625,12 @@ export function PriceChart({
               </>
             ) : (
               "Dados: carregando"
+            )}
+            {state.status === "ready" && state.fallbackFrom && (
+              <span className="text-amber-400 font-semibold">
+                {" "}
+                · {DATA_SOURCES[state.fallbackFrom]?.label ?? state.fallbackFrom} indisponível agora, usando a reserva
+              </span>
             )}
             {dataStale && lastCandle && (
               <span className="text-amber-400 font-semibold"> · Dados até {formatWhen(lastCandle.t, true)}</span>
