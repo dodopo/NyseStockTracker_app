@@ -34,7 +34,9 @@ O projeto permite:
 
 ### APIs externas
 - Finnhub (cotações, busca de ativos e estatísticas)
-- Massive, ex-Polygon (histórico para os gráficos)
+- Alpaca (histórico das ações para os gráficos, plano grátis)
+- Coinbase e Binance (histórico das criptomoedas, dados públicos)
+- Massive, ex-Polygon (busca de criptomoedas e reserva dos gráficos)
 
 
 ## Funcionalidades atuais
@@ -50,13 +52,15 @@ O projeto permite:
 - Backup e restauração em JSON
 - Quantidades e preços com até 8 casas decimais, calculados sem erro de arredondamento
 - Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA ou Cripto)
-- Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico 24 h e estatísticas
+- Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico em tempo real e estatísticas
 - Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
 - Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)
 - Conta: trocar senha (desconecta os outros aparelhos), trocar e-mail, trocar a chave da Finnhub (testada antes de salvar), sair de todos os aparelhos e ver as informações da conta
-- Gráfico estilo TradingView por ativo: velas e volume, períodos de 1 dia a 2 anos, legenda com abertura/máxima/mínima/fechamento, tela cheia, **as suas compras e vendas marcadas** e a linha do seu preço médio
+- Gráfico estilo TradingView por ativo: velas e volume, períodos de 1 dia até todo o histórico (ações desde 2016, Bitcoin desde 2015), legenda com abertura/máxima/mínima/fechamento, tela cheia, **as suas compras e vendas marcadas**, a linha do seu preço médio e a linha do preço agora
+- Médias móveis de longo prazo com liga/desliga: 200 dias, 200 semanas e 50 meses
+- A fonte dos dados aparece sob o gráfico, com aviso quando os dados estão atrasados
 - Estatísticas: mínima e máxima de 52 semanas, volume médio, valor de mercado e beta
 
 
@@ -99,18 +103,22 @@ O app usa a API gratuita da [Finnhub](https://finnhub.io/) para cotações. Cada
 
 > O plano gratuito da Finnhub tem limite de requisições por minuto.
 
-## 📈 Chave da Massive (gráficos)
+## 📈 Dados dos gráficos
 
-O plano gratuito da Finnhub não entrega histórico de preços, então os gráficos usam a
-[Massive](https://massive.com/) (antiga Polygon.io). O plano **Stocks Basic** é gratuito, para uso
-pessoal e não profissional, com 2 anos de histórico e 5 consultas por minuto (o servidor guarda as
-respostas em cache e respeita esse ritmo).
+| Ativo | Fonte | Atraso | Histórico | Chave |
+|---|---|---|---|---|
+| Criptomoedas | Coinbase (reserva: Binance) | tempo real | desde a listagem (BTC: 2015) | não precisa |
+| Ações dos EUA | Alpaca, plano grátis | 15 min, todas as bolsas | desde 2016 | Alpaca |
+| Reserva | Massive, plano grátis | até o dia anterior | 2 anos | Massive |
 
-1. Crie uma conta gratuita na Massive (de preferência com e-mail e senha, sem login social).
-2. Copie a chave em Dashboard → Keys.
-3. No app: Configurações → Conta → **Chave dos gráficos**. A chave é testada antes de ser salva.
+**Chave da Alpaca (ações):**
+1. Crie uma conta grátis em [alpaca.markets](https://alpaca.markets) (Sign Up → Trading API), com e-mail e senha. A conta começa em Paper Trading, sem dinheiro real.
+2. No painel, em **API Keys**, clique em **Generate New Keys** e copie o API Key ID e o Secret Key.
+3. No app: Configurações → Conta → **Chave da Alpaca**. A chave é testada antes de ser salva e nunca vai para os backups.
 
-A mesma chave é usada para buscar criptomoedas e para o histórico delas.
+**Chave da Massive (opcional, busca de cripto e reserva):** crie uma conta grátis na
+[Massive](https://massive.com/) (antiga Polygon.io), copie a chave em Dashboard → Keys e salve em
+Configurações → Conta → **Chave da Massive**.
 
 ## 🔒 Segurança
 
@@ -192,8 +200,9 @@ Verifica os tipos do TypeScript.
 | `server/db.ts` | Abertura do SQLite e migrações versionadas (`PRAGMA user_version`) |
 | `server/validation.ts` | Validações puras de entrada e regras da carteira |
 | `server/app.ts` | `createApp()`: rotas da API, autenticação e middlewares |
-| `server/candles.ts` | Histórico de velas (Massive) com cache e controle de ritmo |
-| `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos, cálculo de preço médio e tipos de ativo (`assetTypes.ts`) |
+| `server/candles.ts` | Escolhe a fonte das velas por tipo de ativo, com reserva, cache e controle de ritmo |
+| `server/providers/` | Um módulo por fonte de dados (Alpaca, Coinbase, Binance) |
+| `shared/` | Código usado pelo servidor **e** pelo navegador: validação (zod), decimais exatos, cálculo de preço médio, tipos de ativo (`assetTypes.ts`) e médias móveis (`indicators.ts`) |
 | `server/backup.ts` | Backup online do SQLite com checagem de integridade e retenção |
 | `scripts/backup.ts` | Comando `npm run backup` |
 | `scripts/update.sh` | Comando de atualização com rollback automático |

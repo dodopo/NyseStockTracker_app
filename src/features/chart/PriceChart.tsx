@@ -5,6 +5,7 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   TickMarkType,
   createChart,
@@ -24,7 +25,8 @@ import { marketApi } from "../../api/endpoints";
 import { Card } from "../../components/ui";
 import { cn, formatPercent, formatPrice, formatQuantity } from "../../lib/utils";
 import type { Candle, Transaction } from "../../types";
-import { CHART_INTERVALS, CHART_RANGES, isIntraday, type ChartRangeId } from "../../../shared/chartRanges";
+import { CHART_INTERVALS, CHART_RANGES, DATA_SOURCES, isChartStale, isIntraday, type ChartRangeId } from "../../../shared/chartRanges";
+import { MOVING_AVERAGES, MOVING_AVERAGE_IDS, alignToCandles, daysNeeded, type MovingAverageId } from "../../../shared/indicators";
 import { filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
 import { ASSET_TYPES, type AssetType } from "../../../shared/assetTypes";
 
@@ -35,7 +37,33 @@ const COLORS = {
   up: "#089981",
   down: "#f23645",
   accent: "#2962ff",
+  live: "#ff9800",
 };
+
+const MA_STORAGE_KEY = "nyse.chart.movingAverages";
+
+/** Moving averages the user turned on (remembered in this browser only). */
+function loadEnabledMAs(): MovingAverageId[] {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(MA_STORAGE_KEY) ?? "[]");
+    return Array.isArray(saved) ? MOVING_AVERAGE_IDS.filter((id) => saved.includes(id)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEnabledMAs(ids: MovingAverageId[]) {
+  try {
+    window.localStorage.setItem(MA_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // private window or blocked storage: the choice just is not remembered
+  }
+}
+
+type MaState =
+  | { status: "idle" | "loading" }
+  | { status: "ready"; series: Partial<Record<MovingAverageId, Array<{ t: number; v: number }>>>; firstDay: number | null }
+  | { status: "error"; message: string };
 
 const toTime = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
 const fromTime = (time: Time) => (typeof time === "number" ? time * 1000 : 0);
@@ -55,7 +83,7 @@ function formatWhen(ms: number, intraday: boolean) {
 
 type LoadState =
   | { status: "loading" }
-  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean }
+  | { status: "ready"; interval: string; candles: Candle[]; stale: boolean; source: string }
   | { status: "error"; message: string; missingKey: boolean };
 
 export function PriceChart({
@@ -64,6 +92,7 @@ export function PriceChart({
   transactions,
   avgCost,
   hasPosition,
+  livePrice,
   onOpenSettings,
 }: {
   symbol: string;
@@ -71,6 +100,8 @@ export function PriceChart({
   transactions: Transaction[];
   avgCost: number;
   hasPosition: boolean;
+  /** Current quote (Finnhub/Binance), drawn as the "Agora" line. */
+  livePrice?: number;
   onOpenSettings: () => void;
 }) {
   const [range, setRange] = useState<ChartRangeId>("1A");
@@ -80,6 +111,8 @@ export function PriceChart({
   const [fullscreen, setFullscreen] = useState(false);
   // Intraday: regular session only (09:30–16:00 New York) unless the user asks for extended hours.
   const [extended, setExtended] = useState(false);
+  const [enabledMAs, setEnabledMAs] = useState<MovingAverageId[]>(loadEnabledMAs);
+  const [ma, setMa] = useState<MaState>({ status: "idle" });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -87,6 +120,9 @@ export function PriceChart({
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const pmLineRef = useRef<IPriceLine | null>(null);
+  const liveLineRef = useRef<IPriceLine | null>(null);
+  const livePriceRef = useRef<number | null>(null);
+  const maSeriesRef = useRef(new Map<MovingAverageId, ISeriesApi<"Line">>());
   const indexByTimeRef = useRef(new Map<number, number>());
   const intradayRef = useRef(false);
 
@@ -132,6 +168,30 @@ export function PriceChart({
       wickDownColor: COLORS.down,
     });
     candles.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.25 } });
+    // Keep the "Agora" line inside the visible price range.
+    candles.applyOptions({
+      autoscaleInfoProvider: (original: () => any) => {
+        const res = original();
+        const p = livePriceRef.current;
+        if (!res || !p) return res;
+        return { ...res, priceRange: { minValue: Math.min(res.priceRange.minValue, p), maxValue: Math.max(res.priceRange.maxValue, p) } };
+      },
+    });
+
+    for (const id of MOVING_AVERAGE_IDS) {
+      const line = chart.addSeries(LineSeries, {
+        color: MOVING_AVERAGES[id].color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+        title: MOVING_AVERAGES[id].short,
+        visible: false,
+        // Intraday: long averages can be far from today's prices; the scale follows the candles.
+        autoscaleInfoProvider: (original: () => any) => (intradayRef.current ? null : original()),
+      });
+      maSeriesRef.current.set(id, line);
+    }
 
     const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
@@ -164,6 +224,8 @@ export function PriceChart({
       volumeSeriesRef.current = null;
       markersRef.current = null;
       pmLineRef.current = null;
+      liveLineRef.current = null;
+      maSeriesRef.current = new Map();
     };
     // Full screen renders the chart in a portal (a new container), so the chart is rebuilt.
   }, [fullscreen]);
@@ -176,11 +238,13 @@ export function PriceChart({
     marketApi
       .candles(symbol, range, interval)
       .then((data) => {
-        if (!cancelled) setState({ status: "ready", interval: data.interval, candles: data.candles, stale: !!data.stale });
+        if (!cancelled) {
+          setState({ status: "ready", interval: data.interval, candles: data.candles, stale: !!data.stale, source: data.source });
+        }
       })
       .catch((error) => {
         if (cancelled) return;
-        const missingKey = error instanceof ApiError && error.code === "MASSIVE_KEY_MISSING";
+        const missingKey = error instanceof ApiError && (error.code === "CHART_KEY_MISSING" || error.code === "MASSIVE_KEY_MISSING");
         setState({ status: "error", message: errorMessage(error, "Não foi possível carregar o gráfico."), missingKey });
       });
     return () => {
@@ -197,6 +261,41 @@ export function PriceChart({
     const all = state.status === "ready" ? state.candles : [];
     return sessionFilter ? filterRegularSession(all, activeInterval) : all;
   }, [state, sessionFilter, activeInterval]);
+
+  // --- moving averages: fetched for the chart's first date when any is turned on ---
+  const firstT = candles[0]?.t ?? null;
+  const enabledKey = enabledMAs.join(",");
+  useEffect(() => {
+    if (!enabledKey || firstT === null) {
+      setMa({ status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setMa({ status: "loading" });
+    marketApi
+      .indicators(symbol, enabledKey.split(","), firstT)
+      .then((data) => !cancelled && setMa({ status: "ready", series: data.series, firstDay: data.firstDay }))
+      .catch((error) => !cancelled && setMa({ status: "error", message: errorMessage(error, "Não foi possível calcular as médias.") }));
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, enabledKey, firstT]);
+
+  const maAligned = useMemo(() => {
+    const out = new Map<MovingAverageId, Array<{ t: number; v: number }>>();
+    if (ma.status !== "ready") return out;
+    const times = candles.map((c) => c.t);
+    for (const id of enabledMAs) out.set(id, alignToCandles(ma.series[id] ?? [], times));
+    return out;
+  }, [ma, candles, enabledMAs]);
+
+  const toggleMA = (id: MovingAverageId) => {
+    setEnabledMAs((current) => {
+      const next = current.includes(id) ? current.filter((x) => x !== id) : MOVING_AVERAGE_IDS.filter((x) => x === id || current.includes(x));
+      saveEnabledMAs(next);
+      return next;
+    });
+  };
 
   // Trades grouped by candle: one arrow per candle and type; details go to the legend.
   const tradesByCandle = useMemo(() => groupTradesByCandle(candles, transactions as ChartTrade[]), [candles, transactions]);
@@ -253,6 +352,38 @@ export function PriceChart({
     chart.timeScale().fitContent();
   }, [candles, tradesByCandle, avgCost, hasPosition, intraday, fullscreen]);
 
+  // --- moving average lines -----------------------------------------------------
+  useEffect(() => {
+    for (const id of MOVING_AVERAGE_IDS) {
+      const line = maSeriesRef.current.get(id);
+      if (!line) continue;
+      const points = maAligned.get(id) ?? [];
+      line.setData(points.map((p) => ({ time: toTime(p.t), value: p.v })));
+      line.applyOptions({ visible: enabledMAs.includes(id) && points.length > 0 });
+    }
+  }, [maAligned, enabledMAs, fullscreen]);
+
+  // --- "Agora": the live quote, so a delayed chart is obvious ---------------------
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    livePriceRef.current = livePrice && livePrice > 0 ? livePrice : null;
+    if (liveLineRef.current) {
+      series.removePriceLine(liveLineRef.current);
+      liveLineRef.current = null;
+    }
+    if (livePriceRef.current) {
+      liveLineRef.current = series.createPriceLine({
+        price: livePriceRef.current,
+        color: COLORS.live,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: "Agora",
+      });
+    }
+  }, [livePrice, candles, fullscreen]);
+
   // Esc leaves full screen.
   useEffect(() => {
     if (!fullscreen) return;
@@ -276,7 +407,18 @@ export function PriceChart({
   const candleChange = shown && prevClose ? { abs: shown.c - prevClose, pct: ((shown.c - prevClose) / prevClose) * 100 } : null;
 
   const rangeConfig = CHART_RANGES[range];
-  const rangeTitle = (id: ChartRangeId) => (id === "1D" && !hasSession ? "Últimas 24 h" : CHART_RANGES[id].title);
+  const source = state.status === "ready" ? state.source : null;
+  const rangeTitle = (id: ChartRangeId) => {
+    if (id === "1D" && !hasSession) return source === "massive" ? "Últimas 24 h disponíveis" : "Últimas 24 h";
+    if (id === "MAX" && source === "massive") return "Máximo do plano grátis da Massive (2 anos)";
+    return CHART_RANGES[id].title;
+  };
+  const lastCandle = candles.length ? candles[candles.length - 1] : null;
+  const dataStale = !!lastCandle && isChartStale(lastCandle.t, activeInterval, !hasSession, Date.now());
+  const maValues = shownIndex !== null
+    ? enabledMAs.map((id) => ({ id, point: (maAligned.get(id) ?? []).find((p) => p.t === candles[shownIndex]?.t) }))
+    : [];
+  const maMissing = ma.status === "ready" ? enabledMAs.filter((id) => !(ma.series[id]?.length)) : [];
 
   const content = (
     <div
@@ -308,7 +450,26 @@ export function PriceChart({
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1" role="group" aria-label="Médias móveis">
+              {MOVING_AVERAGE_IDS.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={enabledMAs.includes(id)}
+                  onClick={() => toggleMA(id)}
+                  title={`${MOVING_AVERAGES[id].label}: ligar/desligar`}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-semibold border transition-all",
+                    enabledMAs.includes(id) ? "border-white/30 bg-white/10 text-tv-text" : "border-white/10 text-tv-text/50 hover:bg-white/5"
+                  )}
+                >
+                  <span className="h-2 w-2 rounded-full" style={{ background: MOVING_AVERAGES[id].color, opacity: enabledMAs.includes(id) ? 1 : 0.4 }} />
+                  {MOVING_AVERAGES[id].short}
+                </button>
+              ))}
+              {ma.status === "loading" && <Loader2 size={14} className="animate-spin text-tv-text/40" />}
+            </div>
             <label className="text-[10px] uppercase text-tv-text/40 font-bold" htmlFor={`interval-${symbol}`}>
               Vela
             </label>
@@ -391,6 +552,25 @@ export function PriceChart({
           )}
         </div>
 
+        {(maValues.length > 0 || maMissing.length > 0 || ma.status === "error") && (
+          <div className="px-4 pb-1 text-xs font-mono flex flex-wrap gap-x-4 gap-y-1">
+            {maValues.map(({ id, point }) =>
+              point ? (
+                <span key={id} style={{ color: MOVING_AVERAGES[id].color }}>
+                  {MOVING_AVERAGES[id].short} {formatPrice(point.v)}
+                </span>
+              ) : null
+            )}
+            {maMissing.map((id) => (
+              <span key={`missing-${id}`} className="font-sans text-tv-text/50">
+                {MOVING_AVERAGES[id].label}: histórico insuficiente (precisa de ~{Math.round(daysNeeded(id) / 365)} anos
+                {ma.status === "ready" && ma.firstDay ? `; dados desde ${new Date(ma.firstDay).toLocaleDateString("pt-BR")}` : ""})
+              </span>
+            ))}
+            {ma.status === "error" && <span className="font-sans text-tv-down">{ma.message}</span>}
+          </div>
+        )}
+
         {/* My trades on the candle under the mouse (or the last one). */}
         <div className="px-4 pb-1 min-h-[20px] text-xs flex flex-wrap gap-x-4 gap-y-1" aria-live="polite">
           {tradeLines.slice(0, 4).map((t, i) => (
@@ -422,7 +602,7 @@ export function PriceChart({
               <p className="text-sm text-tv-text/70 max-w-md">{state.message}</p>
               {state.missingKey && (
                 <button type="button" onClick={onOpenSettings} className="tv-btn flex items-center gap-2">
-                  <KeyRound size={16} /> Configurar a chave da Massive
+                  <KeyRound size={16} /> Configurar as chaves dos gráficos
                 </button>
               )}
             </div>
@@ -431,8 +611,19 @@ export function PriceChart({
 
         <div className="px-4 py-2 border-t border-white/5 flex flex-wrap justify-between gap-2 text-[10px] text-tv-text/40">
           <span>
-            Dados: Massive (com atraso{state.status === "ready" && state.stale ? "; exibindo cache por causa do limite de 5/min" : ""}) ·
-            horário local · ▲ minhas compras ▼ minhas vendas (detalhes ao passar o mouse){hasPosition ? " · linha azul = meu preço médio" : ""}
+            {source && DATA_SOURCES[source] ? (
+              <>
+                Dados: {DATA_SOURCES[source].label} ({DATA_SOURCES[source].delay}
+                {state.status === "ready" && state.stale ? "; exibindo cache, a fonte não respondeu" : ""})
+              </>
+            ) : (
+              "Dados: carregando"
+            )}
+            {dataStale && lastCandle && (
+              <span className="text-amber-400 font-semibold"> · Dados até {formatWhen(lastCandle.t, true)}</span>
+            )}{" "}
+            · horário local · ▲ minhas compras ▼ minhas vendas (detalhes ao passar o mouse){hasPosition ? " · linha azul = meu preço médio" : ""}
+            {livePrice ? " · linha laranja = preço agora" : ""}
           </span>
           <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer noopener" className="hover:text-tv-text/70">
             Gráfico: TradingView Lightweight Charts™

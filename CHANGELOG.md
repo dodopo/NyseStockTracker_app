@@ -16,6 +16,32 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.9.0] - 2026-11-14
+
+Better chart data and long-term moving averages. Database migration v6 is **additive** (two new columns in `users`); rolling back to v0.8.0 works on the same database.
+
+### Added
+- **Crypto charts in real time, no key needed**: Coinbase public market data (Binance as fallback, Massive as last resort). Bitcoin history since July 2015.
+- **US stock charts from Alpaca** (free plan): all US exchanges with 15 min delay, split-adjusted like TradingView, history since 2016. Settings → Conta → **Chave da Alpaca** (API Key ID + Secret Key, tested before saving, shown masked, never exported in backups). Massive stays as fallback.
+- **"Máx" = all history available** (it was capped at the 2 years of Massive's free plan).
+- **Moving averages with on/off buttons**: 200 days, 200 weeks and 50 months, each with its own color, value in the legend and label on the price axis. They use only data known on each day (no look-ahead) and work on any candle size; "histórico insuficiente" is shown when there is not enough history. The choice is remembered in the browser.
+- **"Agora" line**: the live quote drawn on the chart, so a delayed chart is obvious.
+- **Data source under the chart** (Alpaca, Coinbase, Binance or Massive, with its delay) and an amber **"Dados até DD/MM HH:MM"** notice when the last candle is older than the source promises.
+- `GET /api/indicators`, `POST /api/auth/alpaca-key`; `ALPACA_DATA_URL`, `COINBASE_BASE_URL`, `BINANCE_BASE_URL` (advanced/testing).
+- `server/providers/`: one module per data provider with the same shape; weekly, monthly and 30 min candles are built from smaller ones when the provider does not offer them.
+- Tests: 92 (14 new for providers, fallbacks, the Alpaca free-plan rules, moving averages, the Alpaca key, the stale notice and migration v6). Tests never reach the network.
+
+### Changed
+- Crypto statistics (52 weeks, average volume) no longer need the Massive key.
+- On intraday charts the price scale follows the candles; long moving averages far from today's prices do not squash the chart.
+
+### Fixed
+- Crypto charts showed the previous day as if it were the last 24 hours (Massive's free plan delivers crypto only up to the end of the previous day, UTC). Found with real data on 14/11: last candle $68,324 while the market was at about $64,000.
+
+### Notes
+- Why these providers: tested on 14/11 with a real key from Brazil. Alpaca's free plan gave daily bars since 4 Jan 2016, split adjustment (NVDA 1,209.98 → 121) and 200 requests per minute. Coinbase and Binance public candles returned the current minute without a key.
+- Crypto search still uses the Massive key.
+
 ## [0.8.0] - 2026-11-14
 
 Multi-asset: your own tabs and a crypto asset type. Database migration v5 is **additive** (a new `tabs` table and two new columns in `stocks`); existing assets go to a default tab "Ações" automatically.

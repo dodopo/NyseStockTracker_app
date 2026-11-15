@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { AuthUser, BackupFileData, CandlesResponse, Stock, StockStats, Tab, Transaction } from "../types";
+import type { AuthUser, BackupFileData, CandlesResponse, IndicatorsResponse, Stock, StockStats, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
 
 type UserResponse = { success: boolean; user: AuthUser };
@@ -16,6 +16,8 @@ export const authApi = {
     api<UserResponse>("/api/auth/finnhub-key", { method: "POST", body: { apiKey } }),
   saveMassiveKey: (apiKey: string) =>
     api<UserResponse>("/api/auth/massive-key", { method: "POST", body: { apiKey } }),
+  saveAlpacaKey: (keyId: string, secret: string) =>
+    api<UserResponse>("/api/auth/alpaca-key", { method: "POST", body: { keyId, secret } }),
   deleteAccount: (password: string, confirmEmail: string) =>
     api("/api/auth/delete-account", { method: "POST", body: { password, confirmEmail } }),
 };
@@ -27,6 +29,7 @@ export type AccountInfo = {
   lastLoginAt: string | null;
   finnhubKeyHint: string | null;
   massiveKeyHint: string | null;
+  alpacaKeyHint: string | null;
   activeSessions: number;
   appVersion: string;
 };
@@ -62,6 +65,10 @@ export const marketApi = {
   candles: (symbol: string, range: string, interval = "auto") =>
     api<CandlesResponse>(
       `/api/candles?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}`
+    ),
+  indicators: (symbol: string, ids: string[], from: number) =>
+    api<IndicatorsResponse>(
+      `/api/indicators?symbol=${encodeURIComponent(symbol)}&ma=${encodeURIComponent(ids.join(","))}&from=${Math.floor(from)}`
     ),
   stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
 };

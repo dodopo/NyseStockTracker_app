@@ -129,11 +129,12 @@ describe("rotas de gráfico", () => {
     return { app, db, cookie, m };
   }
 
-  it("sem chave da Massive: avisa como configurar", async () => {
+  it("ação sem chave da Alpaca nem da Massive: avisa como configurar", async () => {
     const { app, cookie } = await setup();
     const res = await request(app).get("/api/candles?symbol=AAPL&range=1A").set("Cookie", cookie);
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("MASSIVE_KEY_MISSING");
+    expect(res.body.code).toBe("CHART_KEY_MISSING");
+    expect(res.body.error).toMatch(/Alpaca/);
   });
 
   it("chave da Massive é testada antes de salvar e nunca aparece inteira", async () => {

@@ -304,6 +304,7 @@ function StockDetail({
           transactions={transactions}
           avgCost={position.avgCost}
           hasPosition={position.shares > 0}
+          livePrice={currentPrice}
           onOpenSettings={onOpenSettings}
         />
       </Suspense>

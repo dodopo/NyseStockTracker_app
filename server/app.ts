@@ -5,11 +5,15 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import type { z } from "zod";
 import type { AppConfig } from "./config";
-import { CandleError, createCandleService, defaultMassiveFetch, type MassiveFetch } from "./candles";
+import { CandleError, createCandleService, defaultMassiveFetch, type AlpacaKeys, type MassiveFetch } from "./candles";
+import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
+import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
+import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
 import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
 import {
+  alpacaKeySchema,
   changeEmailSchema,
   changePasswordSchema,
   deleteAccountSchema,
@@ -48,6 +52,8 @@ type UserRow = {
   password_hash: string | null;
   finnhub_key: string | null;
   massive_key: string | null;
+  alpaca_key_id: string | null;
+  alpaca_secret: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -115,6 +121,7 @@ function getSafeUser(user: UserRow | undefined) {
     hasPassword: !!user.password_hash,
     hasFinnhubKey: !!user.finnhub_key,
     hasMassiveKey: !!user.massive_key,
+    hasAlpacaKey: !!(user.alpaca_key_id && user.alpaca_secret),
     createdAt: user.created_at,
     updatedAt: user.updated_at,
     lastLoginAt: user.last_login_at,
@@ -133,11 +140,13 @@ const wrap =
 export function createApp(
   db: DB,
   config: AppConfig,
-  deps: { finnhubFetch?: FinnhubFetch; massiveFetch?: MassiveFetch; now?: () => number } = {}
+  deps: { finnhubFetch?: FinnhubFetch; massiveFetch?: MassiveFetch; dataFetch?: DataFetch; now?: () => number } = {}
 ) {
   const finnhubFetch = deps.finnhubFetch ?? defaultFinnhubFetch;
   const massiveFetch = deps.massiveFetch ?? defaultMassiveFetch;
-  const candleService = createCandleService({ fetch: massiveFetch, now: deps.now });
+  // Tests never reach Coinbase/Binance/Alpaca unless they pass a fake client.
+  const dataFetch = deps.dataFetch ?? (process.env.VITEST || process.env.NODE_ENV === "test" ? offlineDataFetch : defaultDataFetch);
+  const candleService = createCandleService({ fetch: massiveFetch, dataFetch, now: deps.now });
   const statsCache = new Map<string, { value: unknown; expiresAt: number }>();
 
   // ---------------------------------------------------------------------------
@@ -204,6 +213,7 @@ export function createApp(
     updateLastLogin: db.prepare(`UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`),
     updateFinnhubKey: db.prepare(`UPDATE users SET finnhub_key = ?, updated_at = ? WHERE id = ?`),
     updateMassiveKey: db.prepare(`UPDATE users SET massive_key = ?, updated_at = ? WHERE id = ?`),
+    updateAlpacaKey: db.prepare(`UPDATE users SET alpaca_key_id = ?, alpaca_secret = ?, updated_at = ? WHERE id = ?`),
     updatePassword: db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`),
     updateEmail: db.prepare(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`),
     updateProfileFromBackup: db.prepare(
@@ -370,6 +380,38 @@ export function createApp(
     if (!raw || typeof raw !== "object" || !Array.isArray(raw.results)) {
       throw new HttpError(400, "A Massive não confirmou esta chave. Tente de novo em instantes.");
     }
+  }
+
+  /** A key pair is saved only after Alpaca answers a small request with it. */
+  async function verifyAlpacaKey(keys: AlpacaKeys) {
+    const t = Date.now();
+    let raw: any;
+    try {
+      raw = await dataFetch(
+        `${(process.env.ALPACA_DATA_URL?.trim() || "https://data.alpaca.markets").replace(/\/+$/, "")}/v2/stocks/bars?` +
+          new URLSearchParams({
+            symbols: "AAPL",
+            timeframe: "1Day",
+            start: new Date(t - 10 * 86_400_000).toISOString(),
+            end: new Date(t - ALPACA_FREE_DELAY_MS).toISOString(),
+            feed: "sip",
+            limit: "20",
+          }),
+        alpacaHeaders(keys)
+      );
+    } catch (error: any) {
+      if (error?.status === 401 || error?.status === 403) {
+        throw new HttpError(400, "A Alpaca recusou esta chave. Confira se colou o API Key ID e o Secret Key certos.");
+      }
+      throw new HttpError(502, "Não foi possível falar com a Alpaca agora. Tente de novo em instantes.");
+    }
+    if (!raw || typeof raw !== "object" || typeof raw.bars !== "object") {
+      throw new HttpError(400, "A Alpaca não confirmou esta chave. Tente de novo em instantes.");
+    }
+  }
+
+  function alpacaKeysOf(user: UserRow): AlpacaKeys | null {
+    return user.alpaca_key_id && user.alpaca_secret ? { keyId: user.alpaca_key_id, secret: user.alpaca_secret } : null;
   }
 
   async function checkPassword(user: UserRow, password: string) {
@@ -618,6 +660,20 @@ export function createApp(
     })
   );
 
+  app.post(
+    "/api/auth/alpaca-key",
+    authLimiter,
+    requireAuth,
+    wrap(async (req, res) => {
+      const user = currentUser(res);
+      const keys = parseBody(alpacaKeySchema, req.body);
+      await verifyAlpacaKey(keys);
+
+      q.updateAlpacaKey.run(keys.keyId, keys.secret, nowIso(), user.id);
+      res.json({ success: true, user: getSafeUser(q.getUserById.get(user.id) as UserRow) });
+    })
+  );
+
   // ---------------------------------------------------------------------------
   // Account (settings)
   // ---------------------------------------------------------------------------
@@ -631,6 +687,7 @@ export function createApp(
       lastLoginAt: user.last_login_at,
       finnhubKeyHint: keyHint(user.finnhub_key),
       massiveKeyHint: keyHint(user.massive_key),
+      alpacaKeyHint: keyHint(user.alpaca_key_id),
       activeSessions: n,
       appVersion: config.appVersion,
     });
@@ -1115,26 +1172,72 @@ export function createApp(
     wrap(async (req, res) => {
       const user = currentUser(res);
       const symbol = parseSymbol(req.query.symbol);
-      if (!user.massive_key) {
-        res.status(400).json({
-          error: "Configure a chave da Massive em Configurações → Conta para ver os gráficos.",
-          code: "MASSIVE_KEY_MISSING",
-        });
-        return;
-      }
+      const range = String(req.query.range ?? "1A");
       try {
         const result = await candleService.getCandles({
           symbol,
-          range: String(req.query.range ?? "1A"),
+          range,
           interval: req.query.interval ? String(req.query.interval) : undefined,
           apiKey: user.massive_key,
+          alpaca: alpacaKeysOf(user),
         });
         res.setHeader("Cache-Control", "no-store");
-        res.json({ symbol, range: String(req.query.range ?? "1A"), source: "massive", ...result });
+        res.json({ symbol, range, ...result });
       } catch (error) {
-        if (error instanceof CandleError) throw new HttpError(error.status, error.message);
+        if (error instanceof CandleError) {
+          if (error.code) return res.status(error.status).json({ error: error.message, code: error.code });
+          throw new HttpError(error.status, error.message);
+        }
         throw error;
       }
+    })
+  );
+
+  /** Daily history (all of it) for long-term indicators and crypto statistics. */
+  async function dailyHistory(user: UserRow, symbol: string) {
+    try {
+      return await candleService.getCandles({
+        symbol,
+        range: "MAX",
+        interval: "1D",
+        apiKey: user.massive_key,
+        alpaca: alpacaKeysOf(user),
+      });
+    } catch (error) {
+      if (error instanceof CandleError) throw new HttpError(error.status, error.message);
+      throw error;
+    }
+  }
+
+  app.get(
+    "/api/indicators",
+    requireAuth,
+    wrap(async (req, res) => {
+      const symbol = parseSymbol(req.query.symbol);
+      const ids = String(req.query.ma ?? "")
+        .split(",")
+        .filter((id): id is MovingAverageId => (MOVING_AVERAGE_IDS as string[]).includes(id));
+      if (ids.length === 0) throw new HttpError(400, "Informe as médias (ma=200D,200W,50M)");
+      // Only points from `from` on are sent (the chart's first candle), keeping the answer small.
+      const from = Number(req.query.from);
+      const since = Number.isFinite(from) && from > 0 ? from - 40 * 86_400_000 : 0;
+
+      const history = await dailyHistory(currentUser(res), symbol);
+      const daily = history.candles.map((c) => ({ t: c.t, c: c.c }));
+      const series: Record<string, SeriesPoint[]> = {};
+      for (const id of ids) {
+        series[id] = movingAverage(daily, id)
+          .filter((p) => p.t >= since)
+          .map((p) => ({ t: p.t, v: Math.round(p.v * 1e6) / 1e6 }));
+      }
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        symbol,
+        source: history.source,
+        firstDay: history.candles[0]?.t ?? null,
+        days: history.candles.length,
+        series,
+      });
     })
   );
 
@@ -1145,15 +1248,7 @@ export function createApp(
       const symbol = parseSymbol(req.query.symbol);
 
       if (isCryptoTicker(symbol)) {
-        const massiveKey = currentUser(res).massive_key;
-        if (!massiveKey) throw new HttpError(400, "Configure a chave da Massive para ver as estatísticas.");
-        let candles;
-        try {
-          ({ candles } = await candleService.getCandles({ symbol, range: "1A", interval: "1D", apiKey: massiveKey }));
-        } catch (error) {
-          if (error instanceof CandleError) throw new HttpError(error.status, error.message);
-          throw error;
-        }
+        const { candles, source } = await dailyHistory(currentUser(res), symbol);
         const last = candles.slice(-365);
         const hi = last.reduce((m, c) => (c.h > m.h ? c : m), last[0] ?? { h: NaN, t: 0 });
         const lo = last.reduce((m, c) => (c.l < m.l ? c : m), last[0] ?? { l: NaN, t: 0 });
@@ -1171,7 +1266,7 @@ export function createApp(
           avgVolume3m: avg(90),
           marketCap: null,
           beta: null,
-          source: "massive",
+          source,
         });
       }
 
