@@ -39,7 +39,7 @@ import {
   type ChartRangeId,
 } from "../../../shared/chartRanges";
 import { MOVING_AVERAGES, MOVING_AVERAGE_IDS, alignToCandles, daysNeeded, type MovingAverageId } from "../../../shared/indicators";
-import { candleTimeZone, filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
+import { candleTimeZone, chartTimeMs, filterRegularSession, groupTradesByCandle, type ChartTrade } from "../../../shared/chartData";
 import { ASSET_TYPES, type AssetType } from "../../../shared/assetTypes";
 
 const COLORS = {
@@ -77,7 +77,8 @@ type MaState =
   | { status: "ready"; series: Partial<Record<MovingAverageId, Array<{ t: number; v: number }>>>; firstDay: number | null }
   | { status: "error"; message: string };
 
-const toTime = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
+/** Chart time (seconds) for a candle; intraday candles shifted to local time (see chartTimeMs). */
+const toChartTime = (ms: number, intraday: boolean) => Math.floor(chartTimeMs(ms, intraday) / 1000) as UTCTimestamp;
 const fromTime = (time: Time) => (typeof time === "number" ? time * 1000 : 0);
 
 function formatVolume(v: number) {
@@ -156,6 +157,7 @@ export function PriceChart({
   // Crypto candles are dated in UTC, stock candles in New York (see formatWhen).
   const cryptoRef = useRef(false);
   cryptoRef.current = ASSET_TYPES[assetType].hours !== "regular";
+  const chartTime = (ms: number) => toChartTime(ms, intradayRef.current);
 
   // --- create the chart once -------------------------------------------------
   useEffect(() => {
@@ -177,10 +179,9 @@ export function PriceChart({
         borderColor: COLORS.border,
         secondsVisible: false,
         tickMarkFormatter: (time: Time, type: TickMarkType) => {
+          // Chart times are local wall-clock (intraday) or the candle date (daily+), both read in UTC.
           const d = new Date(fromTime(time));
-          // Daily or longer candles: label by the candle's own date (year/month boundaries included).
-          const zone = intradayRef.current ? {} : { timeZone: candleTimeZone(cryptoRef.current) };
-          const fmt = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("pt-BR", { ...o, ...zone }).format(d);
+          const fmt = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("pt-BR", { ...o, timeZone: "UTC" }).format(d);
           if (type === TickMarkType.Year) return fmt({ year: "numeric" });
           if (type === TickMarkType.Month) return fmt({ month: "short" });
           if (type === TickMarkType.DayOfMonth) return fmt({ day: "2-digit", month: "short" });
@@ -189,7 +190,14 @@ export function PriceChart({
       },
       localization: {
         locale: "pt-BR",
-        timeFormatter: (time: Time) => formatWhen(fromTime(time), intradayRef.current, cryptoRef.current),
+        timeFormatter: (time: Time) =>
+          new Intl.DateTimeFormat("pt-BR", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            ...(intradayRef.current ? { hour: "2-digit", minute: "2-digit" } : {}),
+            timeZone: "UTC",
+          }).format(new Date(fromTime(time))),
       },
     });
 
@@ -200,7 +208,8 @@ export function PriceChart({
       wickUpColor: COLORS.up,
       wickDownColor: COLORS.down,
     });
-    candles.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.05 } });
+    // Small bottom margin: on long periods starting near zero a bigger one showed negative prices on the axis.
+    candles.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.02 } });
     // Keep the "Agora" line inside the visible price range.
     candles.applyOptions({
       autoscaleInfoProvider: (original: () => any) => {
@@ -364,11 +373,11 @@ export function PriceChart({
     intradayRef.current = intraday;
     chart.applyOptions({ timeScale: { timeVisible: intraday } });
 
-    indexByTimeRef.current = new Map(candles.map((c, i) => [toTime(c.t) as number, i]));
-    series.setData(candles.map((c) => ({ time: toTime(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
+    indexByTimeRef.current = new Map(candles.map((c, i) => [chartTime(c.t) as number, i]));
+    series.setData(candles.map((c) => ({ time: chartTime(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
     volume.setData(
       candles.map((c) => ({
-        time: toTime(c.t),
+        time: chartTime(c.t),
         value: c.v,
         color: c.c >= c.o ? "rgba(8,153,129,0.35)" : "rgba(242,54,69,0.35)",
       }))
@@ -377,7 +386,7 @@ export function PriceChart({
     // My trades: arrows only (labels collided when trades were close); details in the legend.
     const markers: SeriesMarker<Time>[] = [];
     for (const [index, group] of tradesByCandle) {
-      const time = toTime(candles[index].t);
+      const time = chartTime(candles[index].t);
       if (group.buys.length) {
         markers.push({ time, position: "belowBar", shape: "arrowUp", color: COLORS.up, id: `buy-${index}` });
       }
@@ -412,7 +421,7 @@ export function PriceChart({
       const line = maSeriesRef.current.get(id);
       if (!line) continue;
       const points = maAligned.get(id) ?? [];
-      line.setData(points.map((p) => ({ time: toTime(p.t), value: p.v })));
+      line.setData(points.map((p) => ({ time: chartTime(p.t), value: p.v })));
       line.applyOptions({ visible: enabledMAs.includes(id) && points.length > 0 });
     }
   }, [maAligned, enabledMAs, fullscreen]);
