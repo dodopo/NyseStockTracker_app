@@ -305,6 +305,8 @@ function StockDetail({
           avgCost={position.avgCost}
           hasPosition={position.shares > 0}
           livePrice={currentPrice}
+          liveChangePct={price?.changePercent}
+          name={stock.name}
           onOpenSettings={onOpenSettings}
         />
       </Suspense>
