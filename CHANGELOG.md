@@ -16,6 +16,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.10.1] - 2026-11-15
+
+Chart fixes found in real screenshots of v0.10.0. No database migration.
+
+### Fixed
+- **Crypto dates one day early.** Coinbase daily, weekly and monthly candles start at 00:00 UTC, which is 21:00 of the previous day in Brazil, so the legend showed "30 de out." for the 31/10 candle, the Máx axis showed "2017" twice without 2018 (and "2023" twice without 2024), and 1A/YTD showed "2025" where 2026 starts. Daily or longer candles are now dated by their own date: UTC for crypto, New York for stocks. Intraday charts keep local time.
+- **Crypto buy/sell markers one day late.** Trades were matched to candles by the New York date, so a crypto buy on 29/10 appeared on the 30/10 candle. Crypto now uses the UTC date.
+- **Negative prices on the axis** (−10,000 to −50,000 on long periods). Volume now has its own pane below the prices, like TradingView, instead of sharing the price area.
+- **False "Dados até …" warning** on a custom period that ends in the past.
+- The calendar panel now closes when another period is chosen.
+
+### Added
+- Tests: 102 (candle dates per asset type, crypto markers on the right day, year boundaries).
+
 ## [0.10.0] - 2026-11-15
 
 Chart: cleaner labels, longer and custom periods, and crypto search without a key. No database migration.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterRegularSession, groupTradesByCandle, nySessionDate } from "../shared/chartData";
+import { candleDate, filterRegularSession, groupTradesByCandle, nySessionDate } from "../shared/chartData";
 import { isChartStale, isUsMarketOpen } from "../shared/chartRanges";
 
 // 13 Nov 2026 is in EST (UTC-5): 09:30 NY = 14:30 UTC, 16:00 NY = 21:00 UTC.
@@ -85,5 +85,26 @@ describe("aviso de dados atrasados", () => {
     expect(isChartStale(fri15h - 20 * 60_000, "5m", false, fri15h)).toBe(false);
     expect(isChartStale(Date.parse("2026-11-12T05:00:00Z"), "1D", false, fri15h)).toBe(true);
     expect(isChartStale(Date.parse("2026-11-14T00:55:00Z"), "5m", false, sat)).toBe(false);
+  });
+});
+
+describe("data da vela por tipo de ativo (v0.10.1)", () => {
+  // Real case 15/11: Coinbase daily candle of 31/10 starts 2026-10-31T00:00Z = 30/10 21:00 in Brazil.
+  const btc31 = Date.parse("2026-10-31T00:00:00Z");
+
+  it("cripto usa a data UTC; ação usa a data de NY", () => {
+    expect(candleDate(btc31, true)).toBe("2026-10-31");
+    expect(candleDate(btc31, false)).toBe("2026-10-30"); // NY date of the same instant: why crypto must not use it
+    expect(candleDate(Date.parse("2026-10-30T04:00:00Z"), false)).toBe("2026-10-30"); // stock daily candle (midnight NY)
+  });
+
+  it("compra de cripto em 29/10 fica na vela de 29/10, não na de 30/10", () => {
+    const days = ["2026-10-28", "2026-10-29", "2026-10-30"].map((d) => ({ t: Date.parse(`${d}T00:00:00Z`) }));
+    const trade = [{ type: "BUY" as const, shares: "0.00001", price: "81742", date: "2026-10-29" }];
+    expect([...groupTradesByCandle(days, trade, true).keys()]).toEqual([1]);
+  });
+
+  it("virada de ano: a semana que começa em 01/01/2024 (segunda) é de 2024", () => {
+    expect(candleDate(Date.parse("2024-01-01T00:00:00Z"), true).slice(0, 4)).toBe("2024");
   });
 });
