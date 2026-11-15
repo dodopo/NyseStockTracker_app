@@ -172,6 +172,14 @@ const MIGRATIONS: Array<{ version: number; up: (db: DB) => void }> = [
       }
     },
   },
+  {
+    // v6 = v0.9.0 better chart data: each user's own Alpaca key (US stocks candles). Additive.
+    version: 6,
+    up: (db) => {
+      if (!tableHasColumn(db, "users", "alpaca_key_id")) db.exec(`ALTER TABLE users ADD COLUMN alpaca_key_id TEXT;`);
+      if (!tableHasColumn(db, "users", "alpaca_secret")) db.exec(`ALTER TABLE users ADD COLUMN alpaca_secret TEXT;`);
+    },
+  },
 ];
 
 export const DEFAULT_TAB = { name: "Ações", assetType: "us_stock", color: "#2962ff" } as const;

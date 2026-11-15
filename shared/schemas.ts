@@ -119,6 +119,12 @@ export const finnhubKeySchema = z.object({ apiKey: apiKeyField });
 /** Massive (ex-Polygon) key, used only for historical candles (charts). */
 export const massiveKeySchema = z.object({ apiKey: apiKeyField });
 
+/** Alpaca key pair (US stocks candles). Paper keys start with "PK"; only letters and digits. */
+export const alpacaKeySchema = z.object({
+  keyId: z.string().trim().regex(/^[A-Za-z0-9]{16,40}$/, "API Key ID inválido (letras e números, 16 a 40)"),
+  secret: z.string().trim().regex(/^[A-Za-z0-9]{30,80}$/, "Secret Key inválido (letras e números, 30 a 80)"),
+});
+
 export const deleteAccountSchema = z.object({
   password: z.string().min(1, "Informe a senha").max(1024),
   confirmEmail: z.string().trim().toLowerCase().max(LIMITS.emailMax),

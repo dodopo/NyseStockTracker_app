@@ -1,13 +1,20 @@
 /**
- * Historical candles (OHLCV) for charts, from Massive (ex-Polygon) aggregates.
- *
- * The free Massive plan allows 5 requests per minute and 2 years of history, so
- * this module caches every answer and paces calls per API key. The chart can
- * switch ranges freely without ever hitting the provider limit.
+ * Historical candles (OHLCV) for charts. Picks a provider per asset type and
+ * falls back to the next one when a provider fails or does not list the asset:
+ *   crypto: Coinbase (real time, no key) -> Binance (no key) -> Massive (key)
+ *   stocks: Alpaca (key, all exchanges, 15 min delay) -> Massive (key)
+ * Every answer is cached. Massive calls keep the free-plan pace of 5 per minute.
  */
 
 import { CHART_RANGES, type ChartRangeId } from "../shared/chartRanges";
 import { isCryptoTicker } from "../shared/assetTypes";
+import { alpacaCandles, type AlpacaKeys } from "./providers/alpaca";
+import { binanceCandles } from "./providers/binance";
+import { coinbaseCandles } from "./providers/coinbase";
+import type { CandleRequest, DataFetch, IntervalId } from "./providers/types";
+
+export type { AlpacaKeys } from "./providers/alpaca";
+export type DataSource = "alpaca" | "coinbase" | "binance" | "massive";
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 export type Timespan = "minute" | "hour" | "day" | "week" | "month";
@@ -41,9 +48,23 @@ const RANGE_DAYS: Record<ChartRangeId, (now: number) => number> = {
 };
 
 export class CandleError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string
+  ) {
     super(message);
   }
+}
+
+/** Base URLs, overridable for a local mock (testing). */
+function providerUrls() {
+  const clean = (v: string | undefined, fallback: string) => (v?.trim() || fallback).replace(/\/+$/, "");
+  return {
+    alpaca: clean(process.env.ALPACA_DATA_URL, "https://data.alpaca.markets"),
+    coinbase: clean(process.env.COINBASE_BASE_URL, "https://api.exchange.coinbase.com"),
+    binance: clean(process.env.BINANCE_BASE_URL, "https://api.binance.com"),
+  };
 }
 
 function isoDate(ms: number) {
@@ -55,12 +76,17 @@ export function nyDate(ms: number) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(ms));
 }
 
-function cacheTtlMs(interval: Interval) {
-  return interval.timespan === "minute" || interval.timespan === "hour" ? 5 * 60_000 : 6 * 60 * 60_000;
+function cacheTtlMs(interval: Interval, source: DataSource) {
+  const intraday = interval.timespan === "minute" || interval.timespan === "hour";
+  if (source === "massive") return intraday ? 5 * 60_000 : 6 * 60 * 60_000; // free plan: 5 calls per minute
+  if (source === "alpaca") return intraday ? 2 * 60_000 : 15 * 60_000;
+  return intraday ? 60_000 : 10 * 60_000; // crypto in real time
 }
 
 export function createCandleService(options: {
   fetch: MassiveFetch;
+  /** Client for the keyless/other providers. Without it, only Massive is used. */
+  dataFetch?: DataFetch;
   now?: () => number;
   maxCacheEntries?: number;
   callsPerMinute?: number;
@@ -69,7 +95,7 @@ export function createCandleService(options: {
   const maxEntries = options.maxCacheEntries ?? 300;
   const callsPerMinute = options.callsPerMinute ?? 5;
 
-  const cache = new Map<string, { candles: Candle[]; expiresAt: number }>();
+  const cache = new Map<string, { candles: Candle[]; source: DataSource; expiresAt: number }>();
   const callLog = new Map<string, number[]>(); // per API key: timestamps of recent calls
 
   function takeCallSlot(apiKey: string) {
@@ -131,16 +157,80 @@ export function createCandleService(options: {
     return value;
   }
 
-  function store(key: string, candles: Candle[], interval: Interval) {
+  function store(key: string, candles: Candle[], source: DataSource, interval: Interval) {
     cache.delete(key);
     if (cache.size >= maxEntries) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
     }
-    cache.set(key, { candles, expiresAt: now() + cacheTtlMs(interval) });
+    cache.set(key, { candles, source, expiresAt: now() + cacheTtlMs(interval, source) });
   }
 
-  async function getCandles(params: { symbol: string; range: string; interval?: string; apiKey: string }) {
+  async function fromMassive(symbol: string, interval: Interval, from: number, to: number, apiKey: string) {
+    const waitS = takeCallSlot(apiKey);
+    if (waitS > 0) throw paceError(waitS);
+    // The symbol is already validated (letters, digits, '.', '-', and the 'X:' crypto prefix).
+    const path =
+      `/v2/aggs/ticker/${symbol}/range/${interval.multiplier}/${interval.timespan}` +
+      `/${isoDate(Math.max(from, to - MAX_HISTORY_DAYS * DAY))}/${isoDate(to)}?adjusted=true&sort=asc&limit=50000`;
+    let raw: any;
+    try {
+      raw = await options.fetch(path, apiKey);
+    } catch (error) {
+      throw providerError(error);
+    }
+    return (Array.isArray(raw?.results) ? raw.results : [])
+      .filter((r: any) => [r?.t, r?.o, r?.h, r?.l, r?.c].every((n) => Number.isFinite(n)))
+      .map((r: any) => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: Number.isFinite(r.v) ? r.v : 0 })) as Candle[];
+  }
+
+  /** Providers to try, in order, for this asset and the keys the user has. */
+  function chain(symbol: string, keys: { massive?: string | null; alpaca?: AlpacaKeys | null }) {
+    const list: DataSource[] = [];
+    if (isCryptoTicker(symbol)) {
+      if (options.dataFetch) list.push("coinbase", "binance");
+    } else if (options.dataFetch && keys.alpaca) {
+      list.push("alpaca");
+    }
+    if (keys.massive) list.push("massive");
+    return list;
+  }
+
+  async function fetchFrom(
+    source: DataSource,
+    req: CandleRequest,
+    interval: Interval,
+    keys: { massive?: string | null; alpaca?: AlpacaKeys | null }
+  ): Promise<Candle[]> {
+    const urls = providerUrls();
+    const dataFetch = options.dataFetch!;
+    switch (source) {
+      case "coinbase":
+        return coinbaseCandles(req, dataFetch, urls.coinbase);
+      case "binance":
+        return binanceCandles(req, dataFetch, urls.binance);
+      case "alpaca":
+        try {
+          return await alpacaCandles(req, keys.alpaca!, dataFetch, urls.alpaca, now());
+        } catch (error: any) {
+          if (error?.status === 401 || error?.status === 403) {
+            throw new CandleError(400, "A Alpaca recusou a chave. Confira a chave em Configurações → Conta.");
+          }
+          throw error;
+        }
+      case "massive":
+        return fromMassive(req.symbol, interval, req.from, req.to, keys.massive!);
+    }
+  }
+
+  async function getCandles(params: {
+    symbol: string;
+    range: string;
+    interval?: string;
+    /** Massive key (kept as `apiKey` for compatibility). */
+    apiKey?: string | null;
+    alpaca?: AlpacaKeys | null;
+  }) {
     if (!Object.hasOwn(CHART_RANGES, params.range)) throw new CandleError(400, "Período inválido");
     const rangeId = params.range as ChartRangeId;
     const range = CHART_RANGES[rangeId];
@@ -150,52 +240,57 @@ export function createCandleService(options: {
       throw new CandleError(400, `Vela de ${intervalId} não disponível para o período ${params.range}`);
     }
     const interval = INTERVALS[intervalId];
+    const keys = { massive: params.apiKey, alpaca: params.alpaca };
 
     const key = `${params.symbol}|${params.range}|${intervalId}`;
     const cached = cache.get(key);
     if (cached && cached.expiresAt > now()) {
-      return { interval: intervalId, candles: cached.candles, cached: true };
+      return { interval: intervalId, candles: cached.candles, source: cached.source, cached: true };
     }
 
-    const waitS = takeCallSlot(params.apiKey);
-    if (waitS > 0) {
-      // Over the free-plan pace: serve stale data if we have it, otherwise ask to wait.
-      if (cached) return { interval: intervalId, candles: cached.candles, cached: true, stale: true };
-      throw paceError(waitS);
+    const sources = chain(params.symbol, keys);
+    if (sources.length === 0) {
+      throw new CandleError(
+        400,
+        "Configure a chave da Alpaca (ou da Massive) em Configurações → Conta para ver os gráficos.",
+        "CHART_KEY_MISSING"
+      );
     }
 
     const crypto = isCryptoTicker(params.symbol);
     const to = now();
     const days = crypto && rangeId === "1D" ? 2 : RANGE_DAYS[rangeId](to); // crypto trades 24/7
-    const from = to - Math.min(days, MAX_HISTORY_DAYS) * DAY;
-    // The symbol is already validated (letters, digits, '.', '-', and the 'X:' crypto prefix).
-    const path =
-      `/v2/aggs/ticker/${params.symbol}/range/${interval.multiplier}/${interval.timespan}` +
-      `/${isoDate(from)}/${isoDate(to)}?adjusted=true&sort=asc&limit=50000`;
+    // "Máx": everything the provider has (Massive's free plan is capped at 2 years in fromMassive).
+    const from = rangeId === "MAX" ? 0 : to - days * DAY;
 
-    let raw: any;
-    try {
-      raw = await options.fetch(path, params.apiKey);
-    } catch (error: any) {
-      if (cached) return { interval: intervalId, candles: cached.candles, cached: true, stale: true };
-      throw providerError(error);
+    let firstError: unknown = null;
+    for (const source of sources) {
+      let candles: Candle[];
+      try {
+        candles = await fetchFrom(source, { symbol: params.symbol, interval: intervalId as IntervalId, from, to }, interval, keys);
+      } catch (error) {
+        firstError ??= error;
+        continue; // next provider
+      }
+      if (candles.length === 0 && source !== sources[sources.length - 1]) continue;
+
+      if (params.range === "1D" && candles.length) {
+        const lastT = candles[candles.length - 1].t;
+        candles = crypto
+          ? // crypto: the last 24 hours
+            candles.filter((c) => c.t > lastT - DAY)
+          : // stocks: the most recent session only (5 days are fetched to cover weekends/holidays)
+            candles.filter((c) => nyDate(c.t) === nyDate(lastT));
+      }
+
+      store(key, candles, source, interval);
+      return { interval: intervalId, candles, source, cached: false };
     }
 
-    let candles: Candle[] = (Array.isArray(raw?.results) ? raw.results : [])
-      .filter((r: any) => [r?.t, r?.o, r?.h, r?.l, r?.c].every((n) => Number.isFinite(n)))
-      .map((r: any) => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: Number.isFinite(r.v) ? r.v : 0 }));
-
-    if (params.range === "1D" && candles.length) {
-      const lastT = candles[candles.length - 1].t;
-      candles = crypto
-        ? // crypto: the last 24 hours
-          candles.filter((c) => c.t > lastT - DAY)
-        : // stocks: the most recent session only (5 days are fetched to cover weekends/holidays)
-          candles.filter((c) => nyDate(c.t) === nyDate(lastT));
-    }
-
-    store(key, candles, interval);
-    return { interval: intervalId, candles, cached: false };
+    // Every provider failed: serve stale data if we have it.
+    if (cached) return { interval: intervalId, candles: cached.candles, source: cached.source, cached: true, stale: true };
+    if (firstError instanceof CandleError) throw firstError;
+    throw new CandleError(502, "Não foi possível consultar o histórico agora. Tente de novo em instantes.");
   }
 
   return { getCandles, cachedGet };

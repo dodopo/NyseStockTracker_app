@@ -1,0 +1,52 @@
+/**
+ * Coinbase Exchange public market data (no key): crypto candles in US dollars,
+ * up to the current minute, BTC-USD since July 2015.
+ * Docs: GET /products/{product_id}/candles, at most 300 candles per request,
+ * sizes 1m, 5m, 15m, 1h, 6h, 1d. 30 min, week and month are built here.
+ */
+import { aggregateCandles } from "./aggregate";
+import { ProviderError, cleanCandles, type Candle, type CandleRequest, type DataFetch } from "./types";
+
+const PER_REQUEST = 300;
+const MAX_PAGES = 40; // ~33 years of daily candles; protects against loops
+
+const SOURCE: Record<CandleRequest["interval"], { seconds: number; aggregate?: "30m" | "1W" | "1M" }> = {
+  "5m": { seconds: 300 },
+  "15m": { seconds: 900 },
+  "30m": { seconds: 900, aggregate: "30m" },
+  "1h": { seconds: 3600 },
+  "1D": { seconds: 86_400 },
+  "1W": { seconds: 86_400, aggregate: "1W" },
+  "1M": { seconds: 86_400, aggregate: "1M" },
+};
+
+export function coinbaseProduct(symbol: string) {
+  // X:BTCUSD -> BTC-USD
+  return `${symbol.slice(2, -3)}-USD`;
+}
+
+export async function coinbaseCandles(req: CandleRequest, fetchJson: DataFetch, baseUrl: string): Promise<Candle[]> {
+  const src = SOURCE[req.interval];
+  const step = src.seconds * 1000 * PER_REQUEST;
+  const product = coinbaseProduct(req.symbol);
+  const collected: Candle[] = [];
+
+  // Walks backwards from `to` until `from` (or until Coinbase has no older data).
+  let end = req.to;
+  for (let page = 0; page < MAX_PAGES && end > req.from; page++) {
+    const start = Math.max(req.from, end - step);
+    const url =
+      `${baseUrl}/products/${encodeURIComponent(product)}/candles` +
+      `?granularity=${src.seconds}&start=${new Date(start).toISOString()}&end=${new Date(end).toISOString()}`;
+    const raw = await fetchJson(url);
+    if (!Array.isArray(raw)) throw new ProviderError(502, "Coinbase: resposta inesperada");
+    if (raw.length === 0) break; // before the product was listed
+    for (const r of raw) {
+      if (Array.isArray(r)) collected.push({ t: r[0] * 1000, l: +r[1], h: +r[2], o: +r[3], c: +r[4], v: +r[5] });
+    }
+    end = start;
+  }
+
+  const candles = cleanCandles(collected).filter((c) => c.t >= req.from - src.seconds * 1000 && c.t <= req.to);
+  return src.aggregate ? aggregateCandles(candles, src.aggregate) : candles;
+}
