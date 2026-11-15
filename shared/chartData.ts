@@ -26,6 +26,20 @@ export function nySessionDate(ms: number) {
   return nyParts(ms).date;
 }
 
+/**
+ * Calendar date a candle belongs to. Stock candles follow the New York session;
+ * crypto candles start at 00:00 UTC, so their date is the UTC date (in Brazil,
+ * 00:00 UTC is still 21:00 of the previous day).
+ */
+export function candleDate(ms: number, crypto: boolean) {
+  return crypto ? new Date(ms).toISOString().slice(0, 10) : nySessionDate(ms);
+}
+
+/** Time zone in which a candle's date must be shown (see candleDate). */
+export function candleTimeZone(crypto: boolean) {
+  return crypto ? "UTC" : "America/New_York";
+}
+
 const INTERVAL_MINUTES: Record<string, number> = { "5m": 5, "15m": 15, "30m": 30, "1h": 60 };
 const REGULAR_OPEN = 9 * 60 + 30; // 09:30 New York
 const REGULAR_CLOSE = 16 * 60; // 16:00 New York
@@ -50,11 +64,11 @@ export type CandleTrades = { buys: ChartTrade[]; sells: ChartTrade[] };
  * Groups trades by the candle they belong to: the last candle that starts on or
  * before the trade's session date. Trades outside the visible range are left out.
  */
-export function groupTradesByCandle(candles: { t: number }[], trades: ChartTrade[]) {
+export function groupTradesByCandle(candles: { t: number }[], trades: ChartTrade[], crypto = false) {
   const groups = new Map<number, CandleTrades>();
   if (!candles.length) return groups;
 
-  const dates = candles.map((c) => nySessionDate(c.t));
+  const dates = candles.map((c) => candleDate(c.t, crypto));
   const first = dates[0];
   const last = dates[dates.length - 1];
 
