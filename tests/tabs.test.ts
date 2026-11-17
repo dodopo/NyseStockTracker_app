@@ -217,10 +217,7 @@ describe("migração v5 e backup com abas", () => {
   it("banco da v0.7 ganha a aba 'Ações' com os ativos; cripto antiga vai para 'Cripto'; repetir não muda nada", () => {
     const legacy = new Database(":memory:");
     legacy.pragma("foreign_keys = ON");
-    migrate(legacy);
-    // simulate a v0.7.x database: no tabs, no new columns
-    legacy.exec(`DROP TABLE tabs; ALTER TABLE stocks DROP COLUMN tab_id; ALTER TABLE stocks DROP COLUMN asset_type;`);
-    legacy.pragma("user_version = 4");
+    migrate(legacy, 4); // a v0.7.x database: no tabs, no new columns
     legacy.exec(`
       INSERT INTO users (email, created_at, updated_at) VALUES ('ana@example.com','x','x');
       INSERT INTO stocks (user_id, ticker, name, created_at) VALUES (1,'AAPL','Apple','x'), (1,'X:BTCUSD','Bitcoin','x');

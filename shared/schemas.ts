@@ -96,6 +96,23 @@ export const tabReorderSchema = z.object({
   ids: z.array(z.coerce.number().int().positive()).min(1).max(50),
 });
 
+const portfolioName = z.string().trim().min(1, "Dê um nome à carteira").max(40, "Nome da carteira muito longo");
+
+export const portfolioCreateSchema = z.object({ name: portfolioName, color: tabColor });
+
+export const portfolioUpdateSchema = z
+  .object({ name: portfolioName.optional(), color: tabColor.optional(), archived: z.boolean().optional() })
+  .refine((d) => d.name !== undefined || d.color !== undefined || d.archived !== undefined, { message: "Nada para alterar" });
+
+export const portfolioReorderSchema = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1).max(50),
+});
+
+export const portfolioDeleteSchema = z.object({
+  password: z.string().min(1, "Informe a senha").max(1024),
+  confirmName: z.string().trim().max(40),
+});
+
 export const transactionSchema = z.object({
   ticker: tickerSchema,
   type: z.preprocess(

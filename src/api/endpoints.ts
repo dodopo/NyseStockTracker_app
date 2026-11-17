@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { AuthUser, BackupFileData, CandlesResponse, IndicatorsResponse, Stock, StockStats, Tab, Transaction } from "../types";
+import type { AuthUser, BackupFileData, CandlesResponse, GlobalData, IndicatorsResponse, Portfolio, Stock, StockStats, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
 
 type UserResponse = { success: boolean; user: AuthUser };
@@ -43,16 +43,17 @@ export const accountApi = {
   logoutAll: () => api("/api/account/logout-all", { method: "POST" }),
 };
 
+/** Scoped routes: every call names the portfolio it acts on (never an implicit "current" one). */
 export const portfolioApi = {
-  stocks: () => api<Stock[]>("/api/stocks"),
-  addStock: (stock: { ticker: string; name: string; tabId: number }) =>
-    api("/api/stocks", { method: "POST", body: stock }),
-  deleteStock: (ticker: string) =>
-    api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE" }),
-  transactions: () => api<Transaction[]>("/api/transactions?order=desc"),
-  addTransaction: (tx: Omit<Transaction, "id" | "sort_order">) =>
-    api<{ success: boolean; id: number }>("/api/transactions", { method: "POST", body: tx }),
-  deleteTransaction: (id: number) => api(`/api/transactions/${id}`, { method: "DELETE" }),
+  stocks: (portfolioId: number) => api<Stock[]>("/api/stocks", { portfolioId }),
+  addStock: (portfolioId: number, stock: { ticker: string; name: string; tabId: number }) =>
+    api("/api/stocks", { method: "POST", body: stock, portfolioId }),
+  deleteStock: (portfolioId: number, ticker: string) =>
+    api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE", portfolioId }),
+  transactions: (portfolioId: number) => api<Transaction[]>("/api/transactions?order=desc", { portfolioId }),
+  addTransaction: (portfolioId: number, tx: Omit<Transaction, "id" | "sort_order">) =>
+    api<{ success: boolean; id: number }>("/api/transactions", { method: "POST", body: tx, portfolioId }),
+  deleteTransaction: (portfolioId: number, id: number) => api(`/api/transactions/${id}`, { method: "DELETE", portfolioId }),
   exportBackup: () => api<BackupFileData>("/api/export"),
   importBackup: (backup: BackupFileData, confirmPassword?: string) =>
     api<{ success: boolean; user: AuthUser; skipped: number }>("/api/import", {
@@ -75,13 +76,24 @@ export const marketApi = {
   stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
 };
 
+export const portfoliosApi = {
+  list: () => api<Portfolio[]>("/api/portfolios"),
+  create: (p: { name: string; color: string }) => api<Portfolio>("/api/portfolios", { method: "POST", body: p }),
+  update: (id: number, changes: { name?: string; color?: string; archived?: boolean }) =>
+    api<Portfolio>(`/api/portfolios/${id}`, { method: "PATCH", body: changes }),
+  reorder: (ids: number[]) => api<Portfolio[]>("/api/portfolios/reorder", { method: "POST", body: { ids } }),
+  remove: (id: number, password: string, confirmName: string) =>
+    api<Portfolio[]>(`/api/portfolios/${id}/delete`, { method: "POST", body: { password, confirmName } }),
+  global: () => api<GlobalData>("/api/global"),
+};
+
 export const tabsApi = {
-  list: () => api<Tab[]>("/api/tabs"),
-  create: (tab: { name: string; assetType: AssetType; color: string }) =>
-    api<Tab>("/api/tabs", { method: "POST", body: tab }),
-  update: (id: number, changes: { name?: string; color?: string }) =>
-    api<Tab>(`/api/tabs/${id}`, { method: "PATCH", body: changes }),
-  reorder: (ids: number[]) => api<Tab[]>("/api/tabs/reorder", { method: "POST", body: { ids } }),
-  remove: (id: number, moveTo?: number) =>
-    api(`/api/tabs/${id}${moveTo ? `?moveTo=${moveTo}` : ""}`, { method: "DELETE" }),
+  list: (portfolioId: number) => api<Tab[]>("/api/tabs", { portfolioId }),
+  create: (portfolioId: number, tab: { name: string; assetType: AssetType; color: string }) =>
+    api<Tab>("/api/tabs", { method: "POST", body: tab, portfolioId }),
+  update: (portfolioId: number, id: number, changes: { name?: string; color?: string }) =>
+    api<Tab>(`/api/tabs/${id}`, { method: "PATCH", body: changes, portfolioId }),
+  reorder: (portfolioId: number, ids: number[]) => api<Tab[]>("/api/tabs/reorder", { method: "POST", body: { ids }, portfolioId }),
+  remove: (portfolioId: number, id: number, moveTo?: number) =>
+    api(`/api/tabs/${id}${moveTo ? `?moveTo=${moveTo}` : ""}`, { method: "DELETE", portfolioId }),
 };

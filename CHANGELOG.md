@@ -16,6 +16,33 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.13.0] - 2026-11-17
+
+**Carteiras: one login, many portfolios.** Each portfolio (company, individual, offshore...) has its own tabs, assets and trades, and the same asset can be in more than one. **Database migration (structural): back up first; going back to v0.12.x requires restoring the backup.**
+
+> **Self-hosted:** reinstall `dodopoam-update` from the v0.13.0 tag **before** updating (command in `docs/SELF_HOSTING.md`, "Atualizar para uma nova versão"), so that a failed update also puts the database back.
+
+### Added
+- **Portfolio switcher** (Gmail style) in the header: avatar with the active portfolio's color and initials; menu with every active portfolio and its value, **Visão Global**, "Nova carteira" and "Gerenciar carteiras". The active portfolio is remembered per device.
+- **Gerenciar carteiras**: rename, color, reorder, archive/unarchive (nothing is deleted; archived portfolios leave the switcher and the global view) and delete (asks for the password and the typed name; removes that portfolio's tabs, assets and trades). The only active portfolio cannot be archived or deleted.
+- **Visão Global**: every active portfolio summed. Filter chips by portfolio, table grouped by portfolio (tab shown under each asset), allocation "Por carteira", "Por aba" or "Por ativo" (the same asset in two portfolios counts once), USD | BRL. Clicking an asset opens it in its portfolio.
+- API: `GET/POST /api/portfolios`, `PATCH /api/portfolios/:id`, `POST /api/portfolios/reorder`, `POST /api/portfolios/:id/delete`, `GET /api/global`. Asset, tab and trade routes act on the portfolio in the `X-Portfolio-Id` header (default: the first active one), always checked against the logged-in user (anything else is 404).
+- `dodopoam-update` takes a second backup right before restarting and, if the new version does not come up, stops the service, reinstalls the previous code and restores that backup. The database path comes from the app's own config (`npm run db-path`); the copy is made and checked before anything is moved; the failed database is kept as `portfolio.db.falhou-<time>`; start is retried; if the database cannot be restored and may have been migrated, the service is left stopped on purpose with instructions (never the old code on a migrated database, never a missing database file).
+- `dodopoam-update` refuses to run when it is not the updater published with the requested version (reinstall it first).
+- Tests: 156 (audit gate; migration from a real v6 database row by row, ids and counters kept, failed check leaves the database untouched; portfolios: scope, anti-IDOR on every route, same ticker in two portfolios, archive, delete, global view, names; backup format 2 including refusals; updater: success, rollback with database restore, disk full, service that does not start, updater mismatch). Key safeguards checked by mutation. Migration rehearsed on a copy of the production database: every row identical, id counters kept, second start changes nothing.
+
+### Security
+- **Dependency gate in CI** (`scripts/audit-check.mjs`): fails on any moderate+ advisory except entries in `.audit-allowlist.json`, each with a reason and an expiry date (an expired entry fails by itself). Current exception, approved 17/11/2026, until 2026-12-17: GHSA-fc5q-39xc-vjpf (picomatch ReDoS, no fixed version yet; used only by the build/test tools vite and vitest with the project's own patterns, never with user input or in app requests).
+- Independent review applied before release: every scoped request names its portfolio explicitly and late responses are dropped after a switch (no action can hit another portfolio); a restore whose portfolios do not map completely is refused without changing anything; portfolio names compared the same way everywhere (Unicode, case-insensitive); account-wide caps on assets and trades match what a backup can restore; a device whose portfolio was deleted elsewhere switches to a valid one.
+
+### Changed
+- **Database v7**: new `portfolios` table; `tabs`, `stocks` and `transactions` rebuilt with `portfolio_id` (one transaction, every row and column verified before the old tables are dropped, foreign keys checked, ids and id counters kept). Every user gets "Carteira principal" with everything they had.
+- **Backup format 2**: the whole account with every portfolio (archived ones too). Restoring still replaces the whole account. Older backups still import, into "Carteira principal".
+- Settings → Abas edits the tabs of the active portfolio (hidden in the global view).
+- Narrower header on phones (fits 375 px with the switcher).
+- Server code: HTTP helpers in `server/http.ts`, portfolio routes in `server/portfolios.ts`; color picker shared by tabs and portfolios.
+
+
 ## [0.12.0] - 2026-11-17
 
 **New name: Dodopo Asset Manager** (was NYSE Stock Portfolio Tracker / NyseStockTracker_app). The app is no longer only about NYSE stocks; it is becoming a multi-asset portfolio manager. No database migration.

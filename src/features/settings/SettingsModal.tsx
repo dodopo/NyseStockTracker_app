@@ -42,6 +42,7 @@ export function SettingsModal({
   open,
   user,
   portfolio,
+  portfolioName,
   onClose,
   onRestored,
   onUserChanged,
@@ -49,7 +50,9 @@ export function SettingsModal({
 }: {
   open: boolean;
   user: AuthUser;
-  portfolio: PortfolioState;
+  /** The active portfolio (its tabs are edited here); null in the global view. */
+  portfolio: PortfolioState | null;
+  portfolioName: string | null;
   onClose: () => void;
   onRestored: (user: AuthUser) => Promise<void>;
   /** The account data changed (e-mail, Finnhub key): refresh the session user. */
@@ -94,7 +97,7 @@ export function SettingsModal({
           </div>
 
           <div className="p-6 space-y-6">
-            <TabsCard portfolio={portfolio} />
+            {portfolio && <TabsCard portfolio={portfolio} title={portfolioName ? `Abas · ${portfolioName}` : "Abas"} />}
             <AccountCard user={user} onUserChanged={onUserChanged} onSignedOut={onSignedOut} />
             <BackupCard user={user} />
             <RestoreCard user={user} onRestored={onRestored} onClose={onClose} />

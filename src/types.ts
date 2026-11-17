@@ -6,6 +6,8 @@ export interface Stock {
   /** Present on assets loaded from the server (v0.8.0+). */
   asset_type?: AssetType;
   tab_id?: number | null;
+  /** Present in the global view (all portfolios). */
+  portfolio_id?: number;
 }
 
 export interface Tab {
@@ -15,6 +17,28 @@ export interface Tab {
   color: string;
   sortOrder: number;
   assetCount: number;
+  /** Present in the global view (all portfolios). */
+  portfolioId?: number;
+}
+
+/** A portfolio (carteira) of the logged-in user. */
+export interface Portfolio {
+  id: number;
+  name: string;
+  color: string;
+  sortOrder: number;
+  archived: boolean;
+  archivedAt: string | null;
+  createdAt: string;
+  assetCount: number;
+}
+
+/** Every active portfolio at once (GET /api/global). */
+export interface GlobalData {
+  portfolios: Portfolio[];
+  tabs: Tab[];
+  stocks: Stock[];
+  transactions: Transaction[];
 }
 
 export type TransactionType = "BUY" | "SELL";
@@ -29,6 +53,8 @@ export interface Transaction {
   price: string;
   date: string; // YYYY-MM-DD
   sort_order?: number;
+  /** Present in the global view (all portfolios). */
+  portfolio_id?: number;
 }
 
 export type AuthUser = {
@@ -46,9 +72,12 @@ export type AuthUser = {
 
 /** Row of the consolidated view. */
 export interface PortfolioItem {
+  /** Unique row key: portfolio and ticker. */
+  key: string;
   ticker: string;
   name: string;
   tabId: number | null;
+  portfolioId: number | null;
   quantity: string;
   shares: number;
   avgCost: number;
