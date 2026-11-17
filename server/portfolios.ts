@@ -10,6 +10,7 @@
 import type express from "express";
 import { DEFAULT_TAB, type DB } from "./db";
 import { HttpError, nowIso, parseBody, wrap } from "./http";
+import { STOCK_COLUMNS, TX_COLUMNS, txListOut } from "./columns";
 import {
   portfolioCreateSchema,
   portfolioDeleteSchema,
@@ -50,7 +51,7 @@ function portfolioDto(p: PortfolioRow) {
   };
 }
 
-const TX_COLUMNS = `id, portfolio_id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order`;
+
 
 export function createPortfolios(
   db: DB,
@@ -94,12 +95,12 @@ export function createPortfolios(
        WHERE t.user_id = ? AND p.archived_at IS NULL ORDER BY p.sort_order, p.id, t.sort_order, t.id`
     ),
     globalStocks: db.prepare(
-      `SELECT s.id, s.portfolio_id, s.ticker, s.name, s.created_at, s.asset_type, s.tab_id
+      `SELECT ${STOCK_COLUMNS.split(", ").map((c) => `s.${c}`).join(", ")}, s.portfolio_id
        FROM stocks s JOIN portfolios p ON p.id = s.portfolio_id
        WHERE s.user_id = ? AND p.archived_at IS NULL ORDER BY s.ticker`
     ),
     globalTx: db.prepare(
-      `SELECT ${TX_COLUMNS} FROM transactions
+      `SELECT ${TX_COLUMNS}, portfolio_id FROM transactions
        WHERE user_id = ? AND portfolio_id IN (SELECT id FROM portfolios WHERE user_id = ? AND archived_at IS NULL)
        ORDER BY date DESC, sort_order DESC, id DESC`
     ),
@@ -239,7 +240,7 @@ export function createPortfolios(
           assetCount: t.asset_count ?? 0,
         })),
         stocks: q.globalStocks.all(user.id),
-        transactions: q.globalTx.all(user.id, user.id),
+        transactions: txListOut(q.globalTx.all(user.id, user.id) as Array<{ fx: unknown }>),
       });
     });
   }

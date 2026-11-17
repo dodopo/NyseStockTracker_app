@@ -39,6 +39,8 @@ O projeto permite:
 - Alpaca (histórico das ações para os gráficos, plano grátis)
 - Coinbase e Binance (histórico das criptomoedas, dados públicos)
 - Massive, ex-Polygon (busca de criptomoedas e reserva dos gráficos)
+- Banco Central do Brasil, API de dados abertos (PTAX de fechamento de USD, EUR e CHF, sem chave)
+- Coinbase (câmbio do momento, sem chave)
 
 
 ## Funcionalidades atuais
@@ -56,7 +58,9 @@ O projeto permite:
 - Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA ou Cripto)
 - Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico em tempo real e estatísticas
 - Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
-- Consolidado com filtro por aba, gráfico de alocação (por aba ou por ativo) e valores em dólar ou em reais (câmbio do momento pela Coinbase)
+- Consolidado com filtro por aba, gráfico de alocação (por aba, ativo, liquidez, prazo, jurisdição ou moeda) e valores em USD, BRL, EUR ou CHF
+- Cada operação grava a moeda paga e a PTAX de fechamento do Banco Central da data (compra e venda); custo, preço médio e resultado realizado em outra moeda usam a PTAX de cada operação (venda, IN RFB 2.180/2024, art. 57) e só o preço atual usa o câmbio de hoje
+- Classificação de cada ativo: liquidez, prazo (Curtíssimo até 30 dias, Curto até 180, Médio até 720, Longo até 1.800, Longuíssimo acima) e jurisdição (onshore/offshore), com "aplicar a todos os ativos da aba"
 - Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)

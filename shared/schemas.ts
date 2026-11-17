@@ -5,6 +5,8 @@
 import { z } from "zod";
 import { parsePositiveDecimal } from "./decimal";
 import { ASSET_TYPE_IDS, TAB_COLORS } from "./assetTypes";
+import { CURRENCIES } from "./currencies";
+import { HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Horizon, type Jurisdiction, type Liquidity } from "./classification";
 import {
   EMAIL_RE,
   FINNHUB_KEY_RE,
@@ -122,7 +124,19 @@ export const transactionSchema = z.object({
   shares: decimalSchema("Quantidade"),
   price: decimalSchema("Preço"),
   date: isoDateSchema,
+  /** Currency paid; when absent, the asset's quote currency. */
+  currency: z.enum(CURRENCIES, { message: "Moeda inválida" }).optional(),
 });
+
+const liquidityField = z.enum(LIQUIDITY_IDS as [Liquidity, ...Liquidity[]], { message: "Liquidez inválida" });
+const horizonField = z.enum(HORIZON_IDS as [Horizon, ...Horizon[]], { message: "Prazo inválido" }).nullable();
+const jurisdictionField = z.enum(JURISDICTION_IDS as [Jurisdiction, ...Jurisdiction[]], { message: "Jurisdição inválida" }).nullable();
+
+/** Classification of an asset (or of every asset of a tab): only the fields sent change; null = "Não definido". */
+export const classificationSchema = z
+  .object({ liquidity: liquidityField.optional(), horizon: horizonField.optional(), jurisdiction: jurisdictionField.optional() })
+  .strict()
+  .refine((d) => d.liquidity !== undefined || d.horizon !== undefined || d.jurisdiction !== undefined, { message: "Nada para alterar" });
 
 const apiKeyField = z
   .string()

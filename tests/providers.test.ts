@@ -277,7 +277,7 @@ describe("v0.10.0: busca de cripto pela Coinbase e períodos", () => {
   });
 });
 
-describe("v0.11.0: câmbio USD/BRL", () => {
+describe("câmbio ao vivo (Coinbase): reais por USD, EUR e CHF", () => {
   async function setup(answer: () => any) {
     let calls = 0;
     const dataFetch: DataFetch = async (url) => {
@@ -295,27 +295,30 @@ describe("v0.11.0: câmbio USD/BRL", () => {
     return { agent, calls: () => calls };
   }
 
-  it("vem da Coinbase, sem chave, e fica guardado 10 min", async () => {
-    const { agent, calls } = await setup(() => ({ data: { currency: "USD", rates: { BRL: "5.66579", EUR: "0.92" } } }));
-    const a = await agent.get("/api/fx/usdbrl");
+  it("vem da Coinbase, sem chave, em reais por unidade, e fica guardado 10 min", async () => {
+    const { agent, calls } = await setup(() => ({ data: { currency: "USD", rates: { BRL: "5.5", EUR: "0.92", CHF: "0.8" } } }));
+    const a = await agent.get("/api/fx");
     expect(a.status).toBe(200);
-    expect(a.body).toMatchObject({ pair: "USDBRL", rate: 5.66579, source: "coinbase" });
-    await agent.get("/api/fx/usdbrl");
+    // R$ per EUR = 5.5 / 0.92; R$ per CHF = 5.5 / 0.8
+    expect(a.body).toMatchObject({ base: "BRL", source: "coinbase", rates: { USD: "5.500000", EUR: "5.978261", CHF: "6.875000" } });
+    await agent.get("/api/fx");
     expect(calls()).toBe(1);
   });
 
   it("resposta absurda ou Coinbase fora do ar: erro claro, nunca um câmbio errado", async () => {
-    const bad = await setup(() => ({ data: { rates: { BRL: "0.0001" } } }));
-    expect((await bad.agent.get("/api/fx/usdbrl")).status).toBe(502);
+    const bad = await setup(() => ({ data: { rates: { BRL: "0.0001", EUR: "0.9", CHF: "0.8" } } }));
+    expect((await bad.agent.get("/api/fx")).status).toBe(502);
+    const noEuro = await setup(() => ({ data: { rates: { BRL: "5.5", CHF: "0.8" } } }));
+    expect((await noEuro.agent.get("/api/fx")).status).toBe(502);
     const down = await setup(() => {
       throw new ProviderError(503, "down");
     });
-    expect((await down.agent.get("/api/fx/usdbrl")).status).toBe(502);
+    expect((await down.agent.get("/api/fx")).status).toBe(502);
   });
 
   it("sem sessão não responde", async () => {
     const app = createApp(openDatabase(":memory:"), loadConfig({ NODE_ENV: "test" } as NodeJS.ProcessEnv), {});
-    expect((await request(app).get("/api/fx/usdbrl")).status).toBe(401);
+    expect((await request(app).get("/api/fx")).status).toBe(401);
   });
 });
 

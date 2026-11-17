@@ -2,20 +2,28 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { Card } from "../../components/ui";
 import { Donut } from "../../components/Donut";
-import { marketApi } from "../../api/endpoints";
-import { errorMessage } from "../../api/client";
+import { useLiveFx } from "../../hooks/useLiveFx";
 import { cn, formatCurrency, formatPrice, formatQuantity, type Currency } from "../../lib/utils";
 import type { StockPrice } from "../../services/marketService";
 import type { ConsolidationMode, Portfolio, PortfolioItem, Stock, Tab, Transaction } from "../../types";
 import { buildRows } from "./rows";
 import { displaySymbol } from "../../../shared/assetTypes";
+import { CURRENCIES, isCurrency } from "../../../shared/currencies";
+import { HORIZON, JURISDICTION, LIQUIDITY, NOT_DEFINED } from "../../../shared/classification";
 import { NO_TAB_KEY, allocationSlices, passesTabFilter, toggleTabFilter, type TabFilterKey } from "../../../shared/allocation";
 
 const TAB_FILTER_KEY = "nyse.consolidated.tabs";
 const CURRENCY_KEY = "nyse.consolidated.currency";
 const ALLOC_KEY = "nyse.consolidated.allocBy";
 const PORTFOLIO_FILTER_KEY = "dam.global.portfolios";
-type AllocBy = "portfolio" | "tab" | "asset";
+type AllocBy = "portfolio" | "tab" | "asset" | "liquidity" | "horizon" | "jurisdiction" | "currency";
+const ALLOC_IDS: AllocBy[] = ["portfolio", "tab", "asset", "liquidity", "horizon", "jurisdiction", "currency"];
+const UNDEFINED_COLOR = "#78909c";
+const LIQUIDITY_COLOR = { liquid: "#089981", illiquid: "#f7931a" } as const;
+const HORIZON_COLOR = { ultra_short: "#f23645", short: "#ffb74d", medium: "#2962ff", long: "#26a69a", ultra_long: "#ab47bc" } as const;
+const JURISDICTION_COLOR = { onshore: "#089981", offshore: "#2962ff" } as const;
+const CURRENCY_COLOR: Record<string, string> = { BRL: "#089981", USD: "#2962ff", EUR: "#ab47bc", CHF: "#f23645", crypto: "#f7931a" };
+const CURRENCY_SYMBOL: Record<Currency, string> = { BRL: "R$", USD: "US$", EUR: "€", CHF: "CHF" };
 /** Colors for "Por ativo" slices (tab slices use the tab color). */
 const ASSET_COLORS = ["#2962ff", "#089981", "#f7931a", "#ab47bc", "#f23645", "#26a69a", "#ffb74d", "#ec407a", "#7e57c2", "#78909c"];
 const NO_TAB_COLOR = "#78909c";
@@ -36,11 +44,6 @@ function writeStored(key: string, value: unknown) {
     // private window or blocked storage: the choice just is not remembered
   }
 }
-
-type FxState =
-  | { status: "idle" | "loading" }
-  | { status: "ready"; rate: number; fetchedAt: string; stale?: boolean }
-  | { status: "error"; message: string };
 
 export function ConsolidatedDashboard({
   data,
@@ -69,46 +72,35 @@ export function ConsolidatedDashboard({
     const saved = readStored<unknown>(PORTFOLIO_FILTER_KEY, []);
     return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === "string") : [];
   });
-  const [currency, setCurrency] = useState<Currency>(() => (readStored<string>(CURRENCY_KEY, "USD") === "BRL" ? "BRL" : "USD"));
+  const [currency, setCurrency] = useState<Currency>(() => {
+    const saved = readStored<unknown>(CURRENCY_KEY, "USD");
+    return isCurrency(saved) ? saved : "USD";
+  });
   const [allocChoice, setAllocBy] = useState<AllocBy>(() => {
     const saved = readStored<string>(ALLOC_KEY, "tab");
-    return saved === "asset" || saved === "portfolio" ? saved : "tab";
+    return (ALLOC_IDS as string[]).includes(saved) ? (saved as AllocBy) : "tab";
   });
   const allocBy: AllocBy = allocChoice === "portfolio" && !isGlobal ? "tab" : allocChoice;
-  const [fx, setFx] = useState<FxState>({ status: "idle" });
+  const fx = useLiveFx();
 
   useEffect(() => writeStored(TAB_FILTER_KEY, tabFilter), [tabFilter]);
   useEffect(() => writeStored(PORTFOLIO_FILTER_KEY, portfolioFilter), [portfolioFilter]);
   useEffect(() => writeStored(CURRENCY_KEY, currency), [currency]);
   useEffect(() => writeStored(ALLOC_KEY, allocChoice), [allocChoice]);
 
-  // Exchange rate only when reais are asked for; refreshed every 10 minutes while open.
-  useEffect(() => {
-    if (currency !== "BRL") return;
-    let cancelled = false;
-    const load = () => {
-      setFx((f) => (f.status === "ready" ? f : { status: "loading" }));
-      marketApi
-        .usdBrl()
-        .then((d) => !cancelled && setFx({ status: "ready", rate: d.rate, fetchedAt: d.fetchedAt, stale: d.stale }))
-        .catch((err) => !cancelled && setFx({ status: "error", message: errorMessage(err, "Não foi possível obter o câmbio.") }));
-    };
-    load();
-    const timer = window.setInterval(load, 10 * 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [currency]);
+  // Costs use the PTAX frozen on each trade; today's rate only converts current prices
+  // (and trades whose PTAX is not known yet). Without today's rate: dollars.
+  const live = fx.status === "ready" ? fx.rates : null;
+  const shownCurrency: Currency = currency === "USD" || live ? currency : "USD";
+  const money = (v: number) => formatCurrency(v, shownCurrency);
+  const price = (v: number | string) => formatPrice(Number(v), shownCurrency);
 
-  // Values are kept in dollars; reais only for display, at the current rate.
-  const inBrl = currency === "BRL" && fx.status === "ready";
-  const k = inBrl ? fx.rate : 1;
-  const shownCurrency: Currency = inBrl ? "BRL" : "USD";
-  const money = (v: number) => formatCurrency(v * k, shownCurrency);
-  const price = (v: number | string) => formatPrice(Number(v) * k, shownCurrency);
-
-  const rows: PortfolioItem[] = useMemo(() => buildRows(stocks, transactions, prices), [stocks, transactions, prices]);
+  const rows: PortfolioItem[] = useMemo(
+    () => buildRows(stocks, transactions, prices, shownCurrency, live),
+    [stocks, transactions, prices, shownCurrency, live]
+  );
+  const approxTrades = rows.reduce((sum, r) => sum + r.approxTrades, 0);
+  const missingTrades = rows.reduce((sum, r) => sum + r.missingTrades, 0);
 
   const tabById = new Map(tabs.map((t) => [t.id, t]));
   const tabKeyOf = (r: PortfolioItem) => {
@@ -184,13 +176,40 @@ export function ConsolidatedDashboard({
             },
             (r) => (tabKeyOf(r) === NO_TAB_KEY ? NO_TAB_COLOR : tabById.get(r.tabId!)!.color)
           )
-        : // the same asset in two portfolios counts once, summed
-          sumBy((r) => r.ticker, (r) => displaySymbol(r.ticker));
+        : allocBy === "asset"
+          ? // the same asset in two portfolios counts once, summed
+            sumBy((r) => r.ticker, (r) => displaySymbol(r.ticker))
+          : allocBy === "liquidity"
+            ? sumBy((r) => r.liquidity, (r) => LIQUIDITY[r.liquidity], (r) => LIQUIDITY_COLOR[r.liquidity])
+            : allocBy === "horizon"
+              ? sumBy(
+                  (r) => r.horizon ?? "none",
+                  (r) => (r.horizon ? `${HORIZON[r.horizon].label} (${HORIZON[r.horizon].range})` : NOT_DEFINED),
+                  (r) => (r.horizon ? HORIZON_COLOR[r.horizon] : UNDEFINED_COLOR)
+                )
+              : allocBy === "jurisdiction"
+                ? sumBy(
+                    (r) => r.jurisdiction ?? "none",
+                    (r) => (r.jurisdiction ? JURISDICTION[r.jurisdiction] : NOT_DEFINED),
+                    (r) => (r.jurisdiction ? JURISDICTION_COLOR[r.jurisdiction] : UNDEFINED_COLOR)
+                  )
+                : // exposure: the asset's own currency; crypto is its own risk, shown apart
+                  sumBy(
+                    (r) => (r.isCrypto ? "crypto" : r.assetCurrency),
+                    (r) => (r.isCrypto ? "Cripto (cotada em US$)" : CURRENCY_SYMBOL[r.assetCurrency] + " · " + r.assetCurrency),
+                    (r) => CURRENCY_COLOR[r.isCrypto ? "crypto" : r.assetCurrency]
+                  );
   const sliceColor = (i: number, color?: string) => color ?? ASSET_COLORS[i % ASSET_COLORS.length];
-  const allocOptions: Array<[AllocBy, string]> = isGlobal
-    ? [["portfolio", "Por carteira"], ["tab", "Por aba"], ["asset", "Por ativo"]]
-    : [["tab", "Por aba"], ["asset", "Por ativo"]];
-  const allocLabel = allocBy === "portfolio" ? "por carteira" : allocBy === "tab" ? "por aba" : "por ativo";
+  const allocOptions: Array<[AllocBy, string]> = [
+    ...(isGlobal ? ([["portfolio", "Por carteira"]] as Array<[AllocBy, string]>) : []),
+    ["tab", "Por aba"],
+    ["asset", "Por ativo"],
+    ["liquidity", "Por liquidez"],
+    ["horizon", "Por prazo"],
+    ["jurisdiction", "Por jurisdição"],
+    ["currency", "Por moeda"],
+  ];
+  const allocLabel = (allocOptions.find(([v]) => v === allocBy)?.[1] ?? "").toLowerCase();
 
   const segmented = <T extends string>(
     label: string,
@@ -276,17 +295,34 @@ export function ConsolidatedDashboard({
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
-            {currency === "BRL" && fx.status === "loading" && <Loader2 size={14} className="animate-spin text-tv-text/40" />}
-            {segmented<Currency>("Moeda", currency, [["USD", "USD"], ["BRL", "BRL"]], setCurrency)}
+            {currency !== "USD" && fx.status === "loading" && <Loader2 size={14} className="animate-spin text-tv-text/40" />}
+            {segmented<Currency>("Moeda", currency, CURRENCIES.map((c) => [c, c] as [Currency, string]), setCurrency)}
           </div>
-          {currency === "BRL" && fx.status === "ready" && (
-            <span className="text-[10px] text-tv-text/40">
-              US$ 1 = R$ {fx.rate.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} · Coinbase,{" "}
-              {new Date(fx.fetchedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          {shownCurrency !== "USD" && fx.status === "ready" && (
+            <span className="text-[10px] text-tv-text/40 text-right">
+              Hoje: US$ 1 = {CURRENCY_SYMBOL[shownCurrency]}{" "}
+              {(Number(fx.rates.USD) / (shownCurrency === "BRL" ? 1 : Number(fx.rates[shownCurrency]))).toLocaleString("pt-BR", {
+                minimumFractionDigits: 4,
+                maximumFractionDigits: 4,
+              })}{" "}
+              · Coinbase, {new Date(fx.fetchedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
               {fx.stale ? " (último disponível)" : ""}
+              <br />
+              Custo e resultado realizado: PTAX (venda) da data de cada operação
             </span>
           )}
-          {currency === "BRL" && fx.status === "error" && (
+          {approxTrades > 0 && (
+            <span className="text-[10px] text-amber-400 text-right">
+              {approxTrades === 1 ? "1 operação ainda sem PTAX: convertida" : `${approxTrades} operações ainda sem PTAX: convertidas`} pelo câmbio de hoje
+            </span>
+          )}
+          {missingTrades > 0 && (
+            <span className="text-[10px] text-tv-down text-right">
+              {missingTrades === 1 ? "1 operação em outra moeda ficou" : `${missingTrades} operações em outra moeda ficaram`} fora dos valores: sem PTAX e
+              sem câmbio de hoje
+            </span>
+          )}
+          {currency !== "USD" && fx.status === "error" && (
             <span className="text-[10px] text-tv-down">{fx.message} Mostrando em dólar.</span>
           )}
         </div>
@@ -333,7 +369,20 @@ export function ConsolidatedDashboard({
       {slices.length > 0 && (
         <Card
           title="Alocação"
-          extra={segmented<AllocBy>("Alocação por", allocBy, allocOptions, setAllocBy)}
+          extra={
+            <select
+              aria-label="Alocação por"
+              className="tv-input py-1 text-xs font-semibold"
+              value={allocBy}
+              onChange={(e) => setAllocBy(e.target.value as AllocBy)}
+            >
+              {allocOptions.map(([v, text]) => (
+                <option key={v} value={v}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          }
         >
           <div className="flex flex-col sm:flex-row items-center gap-6">
             <Donut

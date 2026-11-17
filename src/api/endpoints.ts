@@ -1,5 +1,19 @@
 import { api } from "./client";
-import type { AuthUser, BackupFileData, CandlesResponse, GlobalData, IndicatorsResponse, Portfolio, Stock, StockStats, Tab, Transaction } from "../types";
+import type {
+  AuthUser,
+  BackupFileData,
+  CandlesResponse,
+  ClassificationChanges,
+  GlobalData,
+  IndicatorsResponse,
+  LiveFx,
+  Portfolio,
+  Stock,
+  StockStats,
+  Tab,
+  Transaction,
+} from "../types";
+import type { FxSnapshot } from "../../shared/currencies";
 import type { AssetType } from "../../shared/assetTypes";
 
 type UserResponse = { success: boolean; user: AuthUser };
@@ -51,8 +65,10 @@ export const portfolioApi = {
   deleteStock: (portfolioId: number, ticker: string) =>
     api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE", portfolioId }),
   transactions: (portfolioId: number) => api<Transaction[]>("/api/transactions?order=desc", { portfolioId }),
-  addTransaction: (portfolioId: number, tx: Omit<Transaction, "id" | "sort_order">) =>
-    api<{ success: boolean; id: number }>("/api/transactions", { method: "POST", body: tx, portfolioId }),
+  addTransaction: (portfolioId: number, tx: Omit<Transaction, "id" | "sort_order" | "fx">) =>
+    api<{ success: boolean; id: number; fx: FxSnapshot | null }>("/api/transactions", { method: "POST", body: tx, portfolioId }),
+  classifyStock: (portfolioId: number, ticker: string, changes: ClassificationChanges) =>
+    api<Stock>(`/api/stocks/${encodeURIComponent(ticker)}/classification`, { method: "PATCH", body: changes, portfolioId }),
   deleteTransaction: (portfolioId: number, id: number) => api(`/api/transactions/${id}`, { method: "DELETE", portfolioId }),
   exportBackup: () => api<BackupFileData>("/api/export"),
   importBackup: (backup: BackupFileData, confirmPassword?: string) =>
@@ -72,7 +88,7 @@ export const marketApi = {
     api<IndicatorsResponse>(
       `/api/indicators?symbol=${encodeURIComponent(symbol)}&ma=${encodeURIComponent(ids.join(","))}&from=${Math.floor(from)}`
     ),
-  usdBrl: () => api<{ pair: string; rate: number; source: string; fetchedAt: string; stale?: boolean }>("/api/fx/usdbrl"),
+  fx: () => api<LiveFx>("/api/fx"),
   stats: (symbol: string) => api<StockStats>(`/api/stats?symbol=${encodeURIComponent(symbol)}`),
 };
 
@@ -96,4 +112,7 @@ export const tabsApi = {
   reorder: (portfolioId: number, ids: number[]) => api<Tab[]>("/api/tabs/reorder", { method: "POST", body: { ids }, portfolioId }),
   remove: (portfolioId: number, id: number, moveTo?: number) =>
     api(`/api/tabs/${id}${moveTo ? `?moveTo=${moveTo}` : ""}`, { method: "DELETE", portfolioId }),
+  /** Same classification for every asset of the tab (overwrites each asset's own). */
+  classify: (portfolioId: number, id: number, changes: ClassificationChanges) =>
+    api<{ success: boolean; changed: number }>(`/api/tabs/${id}/classification`, { method: "POST", body: changes, portfolioId }),
 };

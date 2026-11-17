@@ -78,13 +78,21 @@ export async function coinbaseUsdAssets(fetchJson: DataFetch, baseUrl: string): 
 }
 
 /**
- * US dollar to Brazilian real, from Coinbase's public exchange rates (no key).
- * Docs: GET https://api.coinbase.com/v2/exchange-rates?currency=USD
+ * Live rates in reais per 1 USD, EUR and CHF, from Coinbase's public exchange
+ * rates (no key). Docs: GET https://api.coinbase.com/v2/exchange-rates?currency=USD
+ * (rates there are "units per 1 USD"; reais per EUR = BRL / EUR).
  */
-export async function coinbaseUsdBrl(fetchJson: DataFetch, baseUrl: string): Promise<number> {
+export async function coinbaseLiveRates(fetchJson: DataFetch, baseUrl: string): Promise<Record<"USD" | "EUR" | "CHF", string>> {
   const raw = await fetchJson(`${baseUrl}/v2/exchange-rates?currency=USD`);
-  const rate = Number(raw?.data?.rates?.BRL);
-  // Sanity range: protects the portfolio values from a broken answer.
-  if (!Number.isFinite(rate) || rate < 1 || rate > 50) throw new ProviderError(502, "Coinbase: câmbio inválido");
-  return rate;
+  const perUsd = (code: string) => Number(raw?.data?.rates?.[code]);
+  const brl = perUsd("BRL");
+  const eur = perUsd("EUR");
+  const chf = perUsd("CHF");
+  // Sanity ranges: protect the portfolio values from a broken answer.
+  if (!Number.isFinite(brl) || brl < 1 || brl > 50) throw new ProviderError(502, "Coinbase: câmbio inválido");
+  for (const v of [eur, chf]) {
+    if (!Number.isFinite(v) || v < 0.2 || v > 5) throw new ProviderError(502, "Coinbase: câmbio inválido");
+  }
+  const fixed = (n: number) => n.toFixed(6);
+  return { USD: fixed(brl), EUR: fixed(brl / eur), CHF: fixed(brl / chf) };
 }

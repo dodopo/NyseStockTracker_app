@@ -1,4 +1,6 @@
 import type { AssetType } from "../shared/assetTypes";
+import type { Horizon, Jurisdiction, Liquidity } from "../shared/classification";
+import type { CurrencyCode, FxSnapshot } from "../shared/currencies";
 
 export interface Stock {
   ticker: string;
@@ -8,7 +10,14 @@ export interface Stock {
   tab_id?: number | null;
   /** Present in the global view (all portfolios). */
   portfolio_id?: number;
+  /** v0.14.0+: classification and the currency the asset is quoted in. */
+  liquidity?: Liquidity;
+  horizon?: Horizon | null;
+  jurisdiction?: Jurisdiction | null;
+  currency?: CurrencyCode;
 }
+
+export type ClassificationChanges = { liquidity?: Liquidity; horizon?: Horizon | null; jurisdiction?: Jurisdiction | null };
 
 export interface Tab {
   id: number;
@@ -55,7 +64,13 @@ export interface Transaction {
   sort_order?: number;
   /** Present in the global view (all portfolios). */
   portfolio_id?: number;
+  /** v0.14.0+: currency paid (default: the asset's) and the PTAX frozen on the trade (null = not known yet). */
+  currency?: CurrencyCode;
+  fx?: FxSnapshot | null;
 }
+
+/** Today's rates, reais per 1 unit (GET /api/fx). */
+export type LiveFx = { base: "BRL"; rates: Record<"USD" | "EUR" | "CHF", string>; source: string; fetchedAt: string; stale?: boolean };
 
 export type AuthUser = {
   id: number;
@@ -88,6 +103,18 @@ export interface PortfolioItem {
   realizedPnL: number;
   totalPnL: number;
   totalPnLPct: number;
+  /** Values above are in this currency. */
+  currency: CurrencyCode;
+  /** The asset's own currency (exposure). */
+  assetCurrency: CurrencyCode;
+  isCrypto: boolean;
+  liquidity: Liquidity;
+  horizon: Horizon | null;
+  jurisdiction: Jurisdiction | null;
+  /** Trades converted at today's rate because their PTAX is not known yet. */
+  approxTrades: number;
+  /** Trades left out (no PTAX and no rate to convert them). */
+  missingTrades: number;
 }
 
 export type ConsolidationMode = "UNIFIED" | "SEPARATED";
