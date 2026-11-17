@@ -117,7 +117,7 @@ function BackupCard({ user }: { user: AuthUser }) {
       const date = now.toISOString().slice(0, 10);
       const time = now.toTimeString().slice(0, 8).replace(/:/g, "-");
       const who = sanitizeFilePart(user.displayName || user.email);
-      downloadJson(data, `nyse-tracker-backup_${who}_${date}_${time}.json`);
+      downloadJson(data, `dodopo-am-backup_${who}_${date}_${time}.json`);
     } catch (err) {
       setError(errorMessage(err, "Falha ao exportar o backup."));
     }

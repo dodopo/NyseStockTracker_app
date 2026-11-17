@@ -4,6 +4,8 @@
  * touching routes or screens.
  */
 
+import { APP_USER_AGENT } from "../../shared/brand";
+
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 
 /** Candle sizes the chart offers (see shared/chartRanges.ts). */
@@ -45,7 +47,7 @@ export function cleanCandles(list: Candle[]): Candle[] {
 
 /** Default client: 15 s timeout, JSON body, error with `status` when the HTTP status is not 2xx. */
 export async function defaultDataFetch(url: string, headers: Record<string, string> = {}) {
-  const res = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "NyseStockTracker (self-hosted)", ...headers }, signal: AbortSignal.timeout(15_000) });
+  const res = await fetch(url, { headers: { Accept: "application/json", "User-Agent": APP_USER_AGENT, ...headers }, signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new ProviderError(res.status, `HTTP ${res.status}`);
   return res.json();
 }

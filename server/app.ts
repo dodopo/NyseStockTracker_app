@@ -13,6 +13,7 @@ import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoi
 import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
 import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
+import { APP_NAME } from "../shared/brand";
 import {
   alpacaKeySchema,
   changeEmailSchema,
@@ -969,7 +970,7 @@ export function createApp(
     const includeSecrets = Number(settings?.include_secrets_in_backup ?? 0) === 1;
 
     res.json({
-      app: "NYSE Stock Portfolio Tracker",
+      app: APP_NAME,
       version: 1,
       exportedAt: nowIso(),
       user: {

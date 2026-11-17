@@ -1,6 +1,6 @@
 # Self-hosting no macOS (servidor pessoal)
 
-Guia para rodar o NYSE Stock Portfolio Tracker 24h num Mac (por exemplo um Mac Mini em casa),
+Guia para rodar o Dodopo Asset Manager 24h num Mac (por exemplo um Mac Mini em casa),
 acessível só por você, sem nuvem paga.
 
 ## Modelo de segurança
@@ -26,8 +26,8 @@ Nos exemplos abaixo:
 
 | Item | Valor de exemplo |
 |---|---|
-| Usuário de serviço | `nysetracker` |
-| UID livre | `509` (confira com `dscl . -list /Users UniqueID`) |
+| Usuário de serviço | `dodopoam` |
+| UID livre | `510` (confira com `dscl . -list /Users UniqueID`) |
 | Porta interna | `3100` |
 | Porta HTTPS do Tailscale | `8444` |
 
@@ -38,17 +38,17 @@ Os comandos com `sudo` pedem a senha de um administrador da máquina.
 Usuário oculto, sem senha e sem shell de login:
 
 ```bash
-sudo dscl . -create /Users/nysetracker
-sudo dscl . -create /Users/nysetracker UniqueID 509
-sudo dscl . -create /Users/nysetracker PrimaryGroupID 20
-sudo dscl . -create /Users/nysetracker UserShell /usr/bin/false
-sudo dscl . -create /Users/nysetracker NFSHomeDirectory /Users/nysetracker
-sudo dscl . -create /Users/nysetracker RealName "NYSE Tracker service"
-sudo dscl . -create /Users/nysetracker IsHidden 1
-sudo dscl . -create /Users/nysetracker Password "*"
-sudo mkdir -p /Users/nysetracker/{data,logs}
-sudo chown -R nysetracker:staff /Users/nysetracker
-sudo chmod 700 /Users/nysetracker
+sudo dscl . -create /Users/dodopoam
+sudo dscl . -create /Users/dodopoam UniqueID 510
+sudo dscl . -create /Users/dodopoam PrimaryGroupID 20
+sudo dscl . -create /Users/dodopoam UserShell /usr/bin/false
+sudo dscl . -create /Users/dodopoam NFSHomeDirectory /Users/dodopoam
+sudo dscl . -create /Users/dodopoam RealName "Dodopo Asset Manager service"
+sudo dscl . -create /Users/dodopoam IsHidden 1
+sudo dscl . -create /Users/dodopoam Password "*"
+sudo mkdir -p /Users/dodopoam/{data,logs}
+sudo chown -R dodopoam:staff /Users/dodopoam
+sudo chmod 700 /Users/dodopoam
 ```
 
 ## 2. Instalar o app numa versão publicada
@@ -56,8 +56,8 @@ sudo chmod 700 /Users/nysetracker
 Sempre a partir de uma tag (veja as Releases), nunca da `main` em andamento:
 
 ```bash
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker && git clone https://github.com/dodopo/NyseStockTracker_app.git app'
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet v0.5.0 && npm ci && npm run build && npm test'
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam && git clone https://github.com/dodopo/dodopo-asset-manager.git app'
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam/app && git checkout --quiet v0.12.0 && npm ci && npm run build && npm test'
 ```
 
 Os comandos usam `sh -c 'cd ...'` porque o usuário de serviço não consegue entrar na pasta de
@@ -68,11 +68,11 @@ quem está digitando (as pastas pessoais são fechadas).
 Crie o arquivo legível só pelo usuário de serviço:
 
 ```bash
-sudo -u nysetracker -H sh -c 'umask 077 && cat > /Users/nysetracker/app/.env' <<'EOF'
+sudo -u dodopoam -H sh -c 'umask 077 && cat > /Users/dodopoam/app/.env' <<'EOF'
 HOST=127.0.0.1
 PORT=3100
-DATA_DIR=/Users/nysetracker/data
-BACKUP_DIR=/Users/nysetracker/data/backups
+DATA_DIR=/Users/dodopoam/data
+BACKUP_DIR=/Users/dodopoam/data/backups
 BACKUP_RETAIN=30
 ALLOW_REGISTRATION=true
 TRUST_PROXY=loopback
@@ -89,10 +89,10 @@ Os modelos ficam em `deploy/macos/`. O comando abaixo troca os marcadores e inst
 
 ```bash
 for f in app backup; do
-  sudo sh -c "sed -e 's|__SERVICE_USER__|nysetracker|g' -e 's|__HOME__|/Users/nysetracker|g' /Users/nysetracker/app/deploy/macos/local.nysetracker.$f.plist > /Library/LaunchDaemons/local.nysetracker.$f.plist"
-  sudo chown root:wheel /Library/LaunchDaemons/local.nysetracker.$f.plist
-  sudo chmod 644 /Library/LaunchDaemons/local.nysetracker.$f.plist
-  sudo launchctl bootstrap system /Library/LaunchDaemons/local.nysetracker.$f.plist
+  sudo sh -c "sed -e 's|__SERVICE_USER__|dodopoam|g' -e 's|__HOME__|/Users/dodopoam|g' /Users/dodopoam/app/deploy/macos/local.dodopoam.$f.plist > /Library/LaunchDaemons/local.dodopoam.$f.plist"
+  sudo chown root:wheel /Library/LaunchDaemons/local.dodopoam.$f.plist
+  sudo chmod 644 /Library/LaunchDaemons/local.dodopoam.$f.plist
+  sudo launchctl bootstrap system /Library/LaunchDaemons/local.dodopoam.$f.plist
 done
 ```
 
@@ -102,7 +102,7 @@ Conferir:
 curl -s http://127.0.0.1:3100/api/auth/me
 ```
 
-A resposta esperada é `{"authenticated":false,...}`. Os logs ficam em `/Users/nysetracker/logs/`.
+A resposta esperada é `{"authenticated":false,...}`. Os logs ficam em `/Users/dodopoam/logs/`.
 
 ## 5. Publicar na tailnet (HTTPS privado)
 
@@ -125,8 +125,8 @@ de outro aparelho.
 3. Feche o cadastro e reinicie o app:
 
 ```bash
-sudo -u nysetracker -H sh -c "cd /Users/nysetracker/app && sed -i '' 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env && chmod 600 .env"
-sudo launchctl kickstart -k system/local.nysetracker.app
+sudo -u dodopoam -H sh -c "cd /Users/dodopoam/app && sed -i '' 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env && chmod 600 .env"
+sudo launchctl kickstart -k system/local.dodopoam.app
 ```
 
 A tela de login deixa de mostrar a aba **CRIAR CONTA**.
@@ -136,13 +136,13 @@ A tela de login deixa de mostrar a aba **CRIAR CONTA**.
 A atualização é **manual de propósito**: nada chega sozinho do GitHub ao servidor. Leia o
 `CHANGELOG.md` da versão nova antes; versões com migração de banco avisam no topo.
 
-### Comando de atualização (recomendado, a partir da v0.5.0)
+### Comando de atualização (recomendado)
 
 Instale o comando uma vez, numa cópia **do root**:
 
 ```bash
 sudo mkdir -p /usr/local/sbin
-sudo sh -c 'install -o root -g wheel -m 755 /Users/nysetracker/app/scripts/update.sh /usr/local/sbin/nysetracker-update'
+sudo sh -c 'install -o root -g wheel -m 755 /Users/dodopoam/app/scripts/update.sh /usr/local/sbin/dodopoam-update'
 ```
 
 Por que uma cópia do root: o arquivo dentro de `app/` pertence ao usuário de serviço. Rodar com
@@ -153,7 +153,7 @@ a cópia com o mesmo comando.
 Para atualizar:
 
 ```bash
-sudo /usr/local/sbin/nysetracker-update vX.Y.Z
+sudo /usr/local/sbin/dodopoam-update vX.Y.Z
 ```
 
 O comando, em ordem:
@@ -167,45 +167,81 @@ O comando, em ordem:
 5. reinicia o serviço e espera `/api/health` responder com a versão nova. Se não responder,
    reinstala a anterior, reinicia e avisa.
 
-Configurações opcionais (variáveis de ambiente): `NYSE_SERVICE_USER`, `NYSE_APP_DIR`,
-`NYSE_LAUNCHD_LABEL`, `NYSE_PORT` (padrão 3100) e `NYSE_HEALTH_TIMEOUT` (padrão 60 s). Exemplo:
+Configurações opcionais (variáveis de ambiente): `DAM_SERVICE_USER`, `DAM_APP_DIR`,
+`DAM_LAUNCHD_LABEL`, `DAM_PORT` (padrão 3100) e `DAM_HEALTH_TIMEOUT` (padrão 60 s). Os nomes antigos `NYSE_*` continuam aceitos. Exemplo:
 
 ```bash
-sudo NYSE_PORT=3100 /usr/local/sbin/nysetracker-update vX.Y.Z
+sudo DAM_PORT=3100 /usr/local/sbin/dodopoam-update vX.Y.Z
 ```
 
-### Primeira atualização vindo da v0.4.x
+### Migrar de uma instalação antiga (usuário `nysetracker`, até a v0.11.x)
 
-A v0.4.x ainda não tem o comando. Instale-o direto da tag `v0.5.0`, sem mexer no app:
+Até a v0.11.x o app se chamava NYSE Stock Portfolio Tracker e rodava como o usuário
+`nysetracker`, com os serviços `local.nysetracker.*` e o comando `nysetracker-update`. A v0.12.0
+troca tudo para `dodopoam`. A migração é feita **uma vez** pelo script
+`scripts/migrate-from-nysetracker.sh`, que **não apaga nada** da instalação antiga:
+
+1. confere o ambiente (usuário antigo no ar, UID livre, porta, tag publicada);
+2. cria o usuário `dodopoam`, instala a versão nova e roda os testes **com o app antigo no ar**;
+3. faz backup do banco antigo, para o app antigo e **copia** dados, backups e `.env` para o usuário
+   novo (conferindo a integridade do banco copiado);
+4. guarda os serviços e o comando antigos em `/usr/local/share/dodopoam-migration/` (para eles não
+   voltarem sozinhos num reboot) e liga os serviços novos na mesma porta;
+5. espera `/api/health` responder com a versão nova e instala o `dodopoam-update`.
+
+Se qualquer passo depois de parar o app antigo falhar, o script **desfaz sozinho** e religa a
+instalação antiga. A mesma porta interna (3100) é usada, então o `tailscale serve` não muda.
+
+O script roda como root, então ele é gravado direto numa pasta que só o root altera (sem passar
+por `/tmp`, onde outro usuário da máquina poderia trocá-lo). Ele sai da tag pela cópia antiga do
+app (o GitHub redireciona o endereço antigo do repositório):
 
 ```bash
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git fetch --tags --quiet && git show v0.5.0:scripts/update.sh' > /tmp/nysetracker-update
-sudo mkdir -p /usr/local/sbin
-sudo install -o root -g wheel -m 755 /tmp/nysetracker-update /usr/local/sbin/nysetracker-update
-rm /tmp/nysetracker-update
-sudo /usr/local/sbin/nysetracker-update v0.5.0
+sudo sh -c 'umask 077 && sudo -u nysetracker -H sh -c "cd /Users/nysetracker/app && git fetch --tags --quiet && git show v0.12.0:scripts/migrate-from-nysetracker.sh" > /usr/local/sbin/dodopoam-migrate'
 ```
 
-Depois, uma única vez, aplique as permissões fechadas da v0.5.0 (os modelos de serviço passaram a
-usar `Umask 077`):
+Confira a impressão digital com a publicada nas notas da Release v0.12.0 no GitHub. Se não for
+igual, **pare** e apague o arquivo:
 
 ```bash
-for f in app backup; do
-  sudo launchctl bootout system/local.nysetracker.$f
-  sudo sh -c "sed -e 's|__SERVICE_USER__|nysetracker|g' -e 's|__HOME__|/Users/nysetracker|g' /Users/nysetracker/app/deploy/macos/local.nysetracker.$f.plist > /Library/LaunchDaemons/local.nysetracker.$f.plist"
-  sudo chown root:wheel /Library/LaunchDaemons/local.nysetracker.$f.plist
-  sudo chmod 644 /Library/LaunchDaemons/local.nysetracker.$f.plist
-  sudo launchctl bootstrap system /Library/LaunchDaemons/local.nysetracker.$f.plist
-done
-sudo -u nysetracker -H sh -c 'chmod -R go-rwx /Users/nysetracker/data /Users/nysetracker/logs /Users/nysetracker/app/.env'
+sudo shasum -a 256 /usr/local/sbin/dodopoam-migrate
 ```
+
+Rode primeiro a simulação:
+
+```bash
+sudo sh /usr/local/sbin/dodopoam-migrate --dry-run v0.12.0
+```
+
+A simulação só lê e mostra o que seria feito. Estando tudo certo, rode de verdade:
+
+```bash
+sudo sh /usr/local/sbin/dodopoam-migrate v0.12.0
+```
+
+Se a conexão SSH cair no meio, o script continua sozinho até o fim (ou até desfazer). O registro
+fica em `/usr/local/share/dodopoam-migration/migrate.log`:
+
+```bash
+sudo tail -n 20 /usr/local/share/dodopoam-migration/migrate.log
+```
+
+Para voltar para a instalação antiga depois (o que for salvo na versão nova depois da migração
+fica só no usuário novo):
+
+```bash
+sudo sh /usr/local/sbin/dodopoam-migrate --rollback
+```
+
+O usuário `nysetracker` e os dados dele ficam intactos até você decidir apagá-los, depois de
+alguns dias com a versão nova funcionando.
 
 ### Atualização manual (sem o comando)
 
 ```bash
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && npm run backup'
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git fetch --tags --quiet && git checkout --quiet vX.Y.Z && npm ci && npm run build && npm test'
-sudo launchctl kickstart -k system/local.nysetracker.app
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam/app && npm run backup'
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam/app && git fetch --tags --quiet && git checkout --quiet vX.Y.Z && npm ci && npm run build && npm test'
+sudo launchctl kickstart -k system/local.dodopoam.app
 ```
 
 ## Voltar para a versão anterior (rollback)
@@ -213,7 +249,7 @@ sudo launchctl kickstart -k system/local.nysetracker.app
 O jeito mais simples é o próprio comando, apontando para a versão anterior:
 
 ```bash
-sudo /usr/local/sbin/nysetracker-update vA.B.C
+sudo /usr/local/sbin/dodopoam-update vA.B.C
 ```
 
 Voltar da v0.5.x para a v0.4.x **não exige restaurar o banco**: a migração da v0.5.0 só
@@ -223,37 +259,37 @@ CHANGELOG, faça o rollback manual com o backup tirado **antes** da atualizaçã
 1. Pare o app:
 
 ```bash
-sudo launchctl bootout system/local.nysetracker.app
+sudo launchctl bootout system/local.dodopoam.app
 ```
 
 2. Volte o código e restaure o backup (troque os nomes pelos seus):
 
 ```bash
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/app && git checkout --quiet vA.B.C && npm ci && npm run build'
-sudo -u nysetracker -H sh -c 'cd /Users/nysetracker/data && rm -f portfolio.db-wal portfolio.db-shm && cp backups/portfolio-AAAAMMDD-HHMMSS.db portfolio.db'
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam/app && git checkout --quiet vA.B.C && npm ci && npm run build'
+sudo -u dodopoam -H sh -c 'cd /Users/dodopoam/data && rm -f portfolio.db-wal portfolio.db-shm && cp backups/portfolio-AAAAMMDD-HHMMSS.db portfolio.db'
 ```
 
 3. Suba de novo:
 
 ```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/local.nysetracker.app.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/local.dodopoam.app.plist
 ```
 
 ## Backups
 
 - `npm run backup` faz uma cópia online (pode rodar com o app ligado), confere a integridade e
   mantém as `BACKUP_RETAIN` mais recentes.
-- O LaunchDaemon `local.nysetracker.backup` roda todo dia às 03:45.
+- O LaunchDaemon `local.dodopoam.backup` roda todo dia às 03:45.
 - Os backups ficam na mesma máquina. Para sobreviver a uma falha de disco, inclua
-  `/Users/nysetracker/data/backups` num backup externo (Time Machine ou outro).
+  `/Users/dodopoam/data/backups` num backup externo (Time Machine ou outro).
 
 ## Desinstalar
 
 ```bash
-sudo launchctl bootout system/local.nysetracker.app
-sudo launchctl bootout system/local.nysetracker.backup
-sudo rm /Library/LaunchDaemons/local.nysetracker.app.plist /Library/LaunchDaemons/local.nysetracker.backup.plist
+sudo launchctl bootout system/local.dodopoam.app
+sudo launchctl bootout system/local.dodopoam.backup
+sudo rm /Library/LaunchDaemons/local.dodopoam.app.plist /Library/LaunchDaemons/local.dodopoam.backup.plist
 tailscale serve --https=8444 off
 ```
 
-Os dados continuam em `/Users/nysetracker/data` até você apagá-los.
+Os dados continuam em `/Users/dodopoam/data` até você apagá-los.

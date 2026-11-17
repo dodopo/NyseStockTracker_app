@@ -16,6 +16,32 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.12.0] - 2026-11-17
+
+**New name: Dodopo Asset Manager** (was NYSE Stock Portfolio Tracker / NyseStockTracker_app). The app is no longer only about NYSE stocks; it is becoming a multi-asset portfolio manager. No database migration.
+
+> **Self-hosted installs (user `nysetracker`):** this version also renames the server side (user `dodopoam`, services `local.dodopoam.*`, command `dodopoam-update`). Do **not** use `nysetracker-update v0.12.0`; follow "Migrar de uma instalação antiga" in `docs/SELF_HOSTING.md` (one-time script with dry run and automatic rollback; the old install is kept intact).
+
+### Docs
+- The migration script is written straight to a root-only path (no `/tmp`), checked against the SHA-256 published in the Release notes, and run with `sudo sh`.
+
+### Added
+- iPhone home screen: "Dodopo AM" as the short name under the icon, app icon (`apple-touch-icon`), favicon and web manifest (opens in the browser as before).
+- `scripts/migrate-from-nysetracker.sh`: one-time server migration to the new names. Read-only `--dry-run`; installs and tests the new version with the old app still up; backs up, stops the old app, copies data byte for byte (checked with `cmp` and SQLite `integrity_check`); parks the old services and command so they do not return on reboot; starts the new services on the same port and waits for the new version. Any failure after the old app stops, an unexpected exit or Ctrl+C puts the old install back automatically (and only reports success when the old version answers again); a dropped SSH session does not stop it, and everything is logged to `/usr/local/share/dodopoam-migration/migrate.log`; `--rollback` does it on demand. Refuses an unexpected `DATA_DIR`, a tag whose `package.json` version differs, or a service template that would not run as the new user. Root never writes through files the new user controls (data folder stays root-owned until copied; templates and updater are read from the tag with `git show`). A retry after a rollback keeps the earlier attempt's data aside instead of deleting it. Nothing of the old install is deleted. Reviewed adversarially before release.
+- Tests: 128 (migration end to end on a fake machine: dry run, success, refusing a second run, rollback on demand, unhealthy new version, corrupt copy, service that does not start, failing tests, preflight refusals, wrong `DATA_DIR`, version mismatch, tampered template, retry after rollback, Ctrl+C, dropped connection, new service that will not stop).
+
+### Changed
+- Name in the screens (login, header, footer, page title); "Dodopo AM" on narrow headers. Tagline "Patrimônio multiativo".
+- Repository renamed to `dodopo/dodopo-asset-manager` (GitHub redirects the old address). Package name `dodopo-asset-manager`.
+- Backup export: file `dodopo-am-backup_...json`, `app` field "Dodopo Asset Manager". Old backup files still import.
+- Data provider requests identify as "DodopoAssetManager (self-hosted)".
+- Server templates and updater: `deploy/macos/local.dodopoam.{app,backup}.plist`; `scripts/update.sh` defaults to user `dodopoam` and label `local.dodopoam.app`, settings renamed to `DAM_*` (the old `NYSE_*` names still work).
+- Docs (README, SELF_HOSTING) use the new names.
+
+### Kept on purpose
+- Session cookie name and browser preference keys keep their internal names, so nobody is logged out and saved filters, currency and moving averages stay.
+
+
 ## [0.11.0] - 2026-11-15
 
 Consolidated view: filter by tab, allocation chart and values in reais. No database migration.

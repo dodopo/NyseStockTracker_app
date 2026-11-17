@@ -1,5 +1,5 @@
 {
-  "name": "NYSE Stock Portfolio Tracker",
-  "description": "Web application for tracking NYSE stock portfolios and transactions.",
+  "name": "Dodopo Asset Manager",
+  "description": "Self-hosted multi-asset portfolio manager: stocks, crypto and other assets, with transactions, average price and profit/loss.",
   "requestFramePermissions": []
 }

@@ -1,12 +1,12 @@
 #!/bin/sh
 # -----------------------------------------------------------------------------
-# NYSE Stock Portfolio Tracker: update a self-hosted install to a release tag.
+# Dodopo Asset Manager: update a self-hosted install to a release tag.
 #
 # Manual by design (no auto-deploy): an administrator decides when to update.
 # Fail-closed: if anything goes wrong, the previous version stays (or is put
 # back) in service.
 #
-#   sudo nysetracker-update v0.5.0
+#   sudo dodopoam-update v0.12.0
 #
 # Steps
 #   1. validate the tag name and that the tag exists (tags are never overwritten)
@@ -18,23 +18,24 @@
 #        failure -> reinstall the previous version, restart it and report
 #
 # Settings (environment variables, all optional):
-#   NYSE_SERVICE_USER   service account            (default: nysetracker)
-#   NYSE_APP_DIR        app folder                 (default: /Users/<user>/app)
-#   NYSE_LAUNCHD_LABEL  LaunchDaemon label         (default: local.nysetracker.app)
-#   NYSE_PORT           local port of the app      (default: 3100)
-#   NYSE_HEALTH_TIMEOUT seconds to wait for health (default: 60)
-#   NYSE_RESTART_CMD    restart command            (default: launchctl kickstart -k system/<label>)
+#   DAM_SERVICE_USER   service account            (default: dodopoam)
+#   DAM_APP_DIR        app folder                 (default: /Users/<user>/app)
+#   DAM_LAUNCHD_LABEL  LaunchDaemon label         (default: local.dodopoam.app)
+#   DAM_PORT           local port of the app      (default: 3100)
+#   DAM_HEALTH_TIMEOUT seconds to wait for health (default: 60)
+#   DAM_RESTART_CMD    restart command            (default: launchctl kickstart -k system/<label>)
+# The old NYSE_* names (before v0.12.0) are still accepted.
 # -----------------------------------------------------------------------------
 set -eu
 
 TAG="${1:-}"
-SERVICE_USER="${NYSE_SERVICE_USER:-nysetracker}"
-APP_DIR="${NYSE_APP_DIR:-/Users/$SERVICE_USER/app}"
-LABEL="${NYSE_LAUNCHD_LABEL:-local.nysetracker.app}"
-PORT="${NYSE_PORT:-3100}"
+SERVICE_USER="${DAM_SERVICE_USER:-${NYSE_SERVICE_USER:-dodopoam}}"
+APP_DIR="${DAM_APP_DIR:-${NYSE_APP_DIR:-/Users/$SERVICE_USER/app}}"
+LABEL="${DAM_LAUNCHD_LABEL:-${NYSE_LAUNCHD_LABEL:-local.dodopoam.app}}"
+PORT="${DAM_PORT:-${NYSE_PORT:-3100}}"
 HEALTH_URL="http://127.0.0.1:$PORT/api/health"
-HEALTH_TIMEOUT="${NYSE_HEALTH_TIMEOUT:-60}"
-RESTART_CMD="${NYSE_RESTART_CMD:-launchctl kickstart -k system/$LABEL}"
+HEALTH_TIMEOUT="${DAM_HEALTH_TIMEOUT:-${NYSE_HEALTH_TIMEOUT:-60}}"
+RESTART_CMD="${DAM_RESTART_CMD:-${NYSE_RESTART_CMD:-launchctl kickstart -k system/$LABEL}}"
 
 log() { printf '[update] %s\n' "$*"; }
 fail() { printf '[update] ERRO: %s\n' "$*" >&2; exit 1; }
@@ -83,7 +84,7 @@ printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "informe a versão no formato vX.Y.Z (ex.: v0.5.0)"
 
 if [ "$(id -u)" -ne 0 ] && [ "$(id -un)" != "$SERVICE_USER" ]; then
-  fail "rode com sudo (ex.: sudo nysetracker-update $TAG)"
+  fail "rode com sudo (ex.: sudo dodopoam-update $TAG)"
 fi
 
 as_service "test -d .git" || fail "pasta do app não encontrada: $APP_DIR"

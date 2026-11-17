@@ -1,6 +1,8 @@
-# NyseStockTracker_app
+# Dodopo Asset Manager
 
-Aplicação web full-stack para acompanhamento e análise de posições em ações da NYSE e criptomoedas, com histórico de operações, cálculo de preço médio e métricas de performance.
+Gestor de patrimônio multiativo, self-hosted: acompanha posições em ações, criptomoedas e outros ativos, com histórico de operações, cálculo de preço médio e métricas de performance.
+
+> Até a v0.11.x o projeto se chamava **NyseStockTracker_app** (NYSE Stock Portfolio Tracker). Quem já roda a versão antiga no próprio servidor deve seguir a migração em [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md#migrar-de-uma-instalação-antiga-usuário-nysetracker-até-a-v011x).
 
 ## 😎 Visão Geral
 
@@ -68,8 +70,8 @@ O projeto permite:
 ## 📦 Instalação
 
 ```bash
-git clone https://github.com/dodopo/NyseStockTracker_app.git
-cd NyseStockTracker_app
+git clone https://github.com/dodopo/dodopo-asset-manager.git
+cd dodopo-asset-manager
 npm install
 npm run dev
 ```
@@ -172,7 +174,7 @@ mantém as 30 mais recentes (`BACKUP_DIR`, `BACKUP_RETAIN`).
 ### Atualizar um servidor pessoal
 
 ```bash
-sudo /usr/local/sbin/nysetracker-update vX.Y.Z
+sudo /usr/local/sbin/dodopoam-update vX.Y.Z
 ```
 
 Backup, instalação, testes e reinício com volta automática para a versão anterior se algo

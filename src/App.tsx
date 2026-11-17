@@ -12,6 +12,7 @@ import { useHashRoute } from "./hooks/useHashRoute";
 import { usePortfolio } from "./hooks/usePortfolio";
 import { cn } from "./lib/utils";
 import type { AuthUser, ConsolidationMode } from "./types";
+import { APP_NAME, APP_SHORT_NAME, APP_TAGLINE } from "../shared/brand";
 
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
@@ -102,9 +103,12 @@ export default function App() {
             <TrendingUp size={24} />
           </div>
           <div>
-            <h1 className="text-lg font-bold leading-none">NYSE Tracker</h1>
-            <span className="text-[10px] uppercase tracking-widest text-tv-text/40 font-bold">
-              Portfolio + Trades (PM)
+            <h1 className="text-lg font-bold leading-none">
+              <span className="sm:hidden">{APP_SHORT_NAME}</span>
+              <span className="hidden sm:inline">{APP_NAME}</span>
+            </h1>
+            <span className="text-[10px] uppercase tracking-widest text-tv-text/40 font-bold whitespace-nowrap">
+              {APP_TAGLINE}
             </span>
           </div>
         </div>
@@ -210,7 +214,7 @@ export default function App() {
       </main>
 
       <footer className="p-6 text-center text-[10px] text-tv-text/20 uppercase tracking-widest font-bold">
-        NYSE Portfolio Tracker &copy; {new Date().getFullYear()} · v{APP_VERSION}
+        {APP_NAME} &copy; {new Date().getFullYear()} · v{APP_VERSION}
       </footer>
     </div>
   );

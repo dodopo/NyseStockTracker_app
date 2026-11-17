@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils";
 import { firstIssue, registerSchema } from "../../../shared/schemas";
 import { LIMITS } from "../../../shared/validation";
 import type { AuthUser } from "../../types";
+import { APP_NAME, APP_TAGLINE } from "../../../shared/brand";
 
 export function AuthScreen({
   registrationEnabled,
@@ -64,9 +65,9 @@ export function AuthScreen({
               <TrendingUp size={26} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold leading-none">NYSE Tracker</h1>
+              <h1 className="text-2xl font-bold leading-none">{APP_NAME}</h1>
               <div className="text-xs uppercase tracking-widest text-tv-text/40 font-bold mt-1">
-                Portfolio + Trades (PM)
+                {APP_TAGLINE}
               </div>
             </div>
           </div>
