@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchDaemon template: runs the app as a dedicated, non-admin user,
-  starts at boot and restarts it if it stops.
-  Replace __SERVICE_USER__ and __HOME__ (e.g. nysetracker and /Users/nysetracker).
+  LaunchDaemon template: daily database backup (npm run backup) at 03:45.
+  Replace __SERVICE_USER__ and __HOME__ (e.g. dodopoam and /Users/dodopoam).
   Install: see docs/SELF_HOSTING.md
 -->
 <plist version="1.0">
 <dict>
-	<key>Label</key><string>local.nysetracker.app</string>
+	<key>Label</key><string>local.dodopoam.backup</string>
 	<key>UserName</key><string>__SERVICE_USER__</string>
 	<!-- Umask 077 (decimal 63): every file the service creates is readable only by its owner. -->
 	<key>Umask</key><integer>63</integer>
-	<key>RunAtLoad</key><true/>
-	<key>KeepAlive</key><true/>
-	<key>ThrottleInterval</key><integer>10</integer>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key><integer>3</integer>
+		<key>Minute</key><integer>45</integer>
+	</dict>
 	<key>WorkingDirectory</key><string>__HOME__/app</string>
 	<key>EnvironmentVariables</key>
 	<dict>
@@ -25,9 +26,10 @@
 	<array>
 		<string>/usr/bin/env</string>
 		<string>npm</string>
-		<string>start</string>
+		<string>run</string>
+		<string>backup</string>
 	</array>
-	<key>StandardOutPath</key><string>__HOME__/logs/app.log</string>
-	<key>StandardErrorPath</key><string>__HOME__/logs/app.log</string>
+	<key>StandardOutPath</key><string>__HOME__/logs/backup.log</string>
+	<key>StandardErrorPath</key><string>__HOME__/logs/backup.log</string>
 </dict>
 </plist>
