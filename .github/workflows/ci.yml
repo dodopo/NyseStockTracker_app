@@ -38,4 +38,5 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=moderate
+      # Fails on any moderate+ advisory not in .audit-allowlist.json (entries expire).
+      - run: node scripts/audit-check.mjs
