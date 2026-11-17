@@ -16,6 +16,22 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.13.1] - 2026-11-17
+
+**Nothing is deleted without asking.** No database change; updating is enough (no restore needed to go back to v0.13.0).
+
+### Fixed
+- Deleting a trade in "Histórico de Transações" happened on the first click, with no confirmation. It now asks first, showing the trade (type, asset, date, quantity and price).
+
+### Changed
+- Every deletion goes through one confirmation (`src/lib/confirm.ts`) that ends with "Isso não pode ser desfeito.": trade, asset (now says how many trades go with it), tab, restore and account. The delete functions in `usePortfolio` require the question, so a new delete button cannot skip it.
+- Restore and account deletion warnings now say they affect **every** portfolio (they still said "a carteira", from before v0.13.0).
+- Deleting a portfolio keeps its own stronger check (password + typed name).
+
+### Security
+- New test (`tests/confirm.test.ts`): every call in the app to an endpoint that deletes or replaces data must ask first, or CI fails. Checked by removing the trade confirmation: the test fails pointing at that line.
+
+
 ## [0.13.0] - 2026-11-17
 
 **Carteiras: one login, many portfolios.** Each portfolio (company, individual, offshore...) has its own tabs, assets and trades, and the same asset can be in more than one. **Database migration (structural): back up first; going back to v0.12.x requires restoring the backup.**
