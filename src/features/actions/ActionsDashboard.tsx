@@ -186,9 +186,13 @@ function StockListCard({
   const type = ASSET_TYPES[tab.assetType];
 
   const remove = async (ticker: string) => {
-    if (!window.confirm(`Excluir ${displaySymbol(ticker)} e todas as transações dele?`)) return;
+    const count = portfolio.transactions.filter((t) => t.ticker === ticker).length;
+    const question =
+      count > 0
+        ? `Excluir ${displaySymbol(ticker)} e ${count === 1 ? "a transação dele" : `as ${count} transações dele`}?`
+        : `Excluir ${displaySymbol(ticker)}?`;
     try {
-      await portfolio.deleteStock(ticker);
+      if (!(await portfolio.deleteStock(ticker, question))) return;
       if (selectedTicker === ticker) {
         onSelect(stocks.find((s) => s.ticker !== ticker)?.ticker ?? null);
       }
@@ -263,10 +267,12 @@ function StockDetail({
   const position = useMemo(() => calculatePosition(transactions, currentPrice), [transactions, currentPrice]);
   const history = useMemo(() => [...transactions].sort(compareTransactions).reverse(), [transactions]);
 
-  const removeTransaction = async (id?: number) => {
-    if (!id) return;
+  const removeTransaction = async (t: (typeof transactions)[number]) => {
+    if (!t.id) return;
+    const kind = t.type === "BUY" ? "COMPRA" : "VENDA";
+    const question = `Excluir a ${kind} de ${displaySymbol(stock.ticker)} de ${t.date}: ${formatQuantity(t.shares)} un @ ${formatPrice(t.price)}?`;
     try {
-      await portfolio.deleteTransaction(id);
+      await portfolio.deleteTransaction(t.id, question);
     } catch (err) {
       window.alert(errorMessage(err, "Não foi possível excluir a operação."));
     }
@@ -353,7 +359,7 @@ function StockDetail({
                   <div className="text-xs text-tv-text/40">{t.date}</div>
                   <button
                     type="button"
-                    onClick={() => void removeTransaction(t.id)}
+                    onClick={() => void removeTransaction(t)}
                     className="text-tv-text/20 hover:text-tv-down transition-colors"
                     title="Excluir transação"
                     aria-label={`Excluir ${t.type === "BUY" ? "compra" : "venda"} de ${t.date}`}

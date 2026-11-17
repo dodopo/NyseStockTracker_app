@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useState } from "react";
 import { BarChart3, CandlestickChart, CheckCircle2, Download, KeyRound, Loader2, Lock, LogOut, Mail, Trash2, Upload, X } from "lucide-react";
 import { accountApi, authApi, portfolioApi, type AccountInfo } from "../../api/endpoints";
 import { ApiError, errorMessage } from "../../api/client";
+import { confirmDestructive } from "../../lib/confirm";
 import { cn } from "../../lib/utils";
 import {
   alpacaKeySchema,
@@ -190,8 +191,8 @@ function RestoreCard({
       setError("Digite a sua senha para restaurar um backup de outro e-mail.");
       return;
     }
-    const confirmed = window.confirm(
-      "Este restore substituirá completamente a carteira atual e as configurações do usuário logado. Deseja continuar?"
+    const confirmed = confirmDestructive(
+      "Este restore substitui TODAS as carteiras (abas, ativos e operações) e as configurações desta conta pelo conteúdo do arquivo. Continuar?"
     );
     if (!confirmed) return;
 
@@ -243,7 +244,7 @@ function RestoreCard({
             <div className="text-tv-text/80">Transações: {preview.transactions?.length || 0}</div>
             <div className="text-tv-text/80">Finnhub key incluída: {preview.user?.finnhub_key ? "Sim" : "Não"}</div>
             <div className="text-xs text-yellow-200 mt-2">
-              Atenção: o restore substitui completamente a carteira e configurações atuais.
+              Atenção: o restore substitui TODAS as carteiras e as configurações atuais.
             </div>
             {needsPassword && (
               <div className="space-y-2 pt-2">
@@ -735,7 +736,7 @@ function DeleteAccountCard({ user, onDeleted }: { user: AuthUser; onDeleted: () 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailMatches || !password) return;
-    if (!window.confirm("Excluir a conta apaga TODA a carteira e não pode ser desfeito. Continuar?")) return;
+    if (!confirmDestructive("Excluir a conta apaga TODAS as carteiras, abas, ativos e operações. Continuar?")) return;
 
     setDeleting(true);
     setError(null);

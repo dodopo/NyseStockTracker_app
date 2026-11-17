@@ -102,9 +102,8 @@ function TabRow({
       tab.assetCount > 0
         ? `Mover ${tab.assetCount} ativo(s) para "${target?.name}" e excluir a aba "${tab.name}"? As operações são mantidas.`
         : `Excluir a aba vazia "${tab.name}"?`;
-    if (!window.confirm(question)) return;
     try {
-      await portfolio.deleteTab(tab.id, tab.assetCount > 0 ? Number(moveTo) : undefined);
+      if (!(await portfolio.deleteTab(tab.id, tab.assetCount > 0 ? Number(moveTo) : undefined, question))) return;
       onError(null);
     } catch (err) {
       onError(errorMessage(err, "Não foi possível excluir a aba."));

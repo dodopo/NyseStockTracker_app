@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
 import type { Stock, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
+import { confirmDestructive } from "../lib/confirm";
 
 /**
  * Data of one portfolio: tabs, assets, transactions and quotes.
@@ -127,20 +128,26 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     if (still(pid)) setTabs(next);
   }, []);
 
-  const deleteTab = useCallback(async (id: number, moveTo?: number) => {
+  // Deletions: each one takes the question shown to the user and does nothing
+  // (returns false) unless the user confirms it. See lib/confirm.ts.
+
+  const deleteTab = useCallback(async (id: number, moveTo: number | undefined, question: string) => {
+    if (!confirmDestructive(question)) return false;
     const pid = pinned();
     await tabsApi.remove(pid, id, moveTo);
     const [nextTabs, nextStocks] = await Promise.all([tabsApi.list(pid), portfolioApi.stocks(pid)]);
-    if (!still(pid)) return;
+    if (!still(pid)) return true;
     setTabs(nextTabs);
     setStocks(nextStocks);
+    return true;
   }, []);
 
-  const deleteStock = useCallback(async (ticker: string) => {
+  const deleteStock = useCallback(async (ticker: string, question: string) => {
+    if (!confirmDestructive(question)) return false;
     const pid = pinned();
     await portfolioApi.deleteStock(pid, ticker);
     const [nextStocks, nextTransactions] = await Promise.all([portfolioApi.stocks(pid), portfolioApi.transactions(pid)]);
-    if (!still(pid)) return;
+    if (!still(pid)) return true;
     setStocks(nextStocks);
     setTransactions(nextTransactions);
     void reloadTabs(pid);
@@ -148,6 +155,7 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
       const { [ticker]: _removed, ...rest } = current;
       return rest;
     });
+    return true;
   }, [reloadTabs]);
 
   const addTransaction = useCallback(async (tx: Omit<Transaction, "id" | "sort_order">) => {
@@ -157,11 +165,13 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     if (still(pid)) setTransactions(next);
   }, []);
 
-  const deleteTransaction = useCallback(async (id: number) => {
+  const deleteTransaction = useCallback(async (id: number, question: string) => {
+    if (!confirmDestructive(question)) return false;
     const pid = pinned();
     await portfolioApi.deleteTransaction(pid, id);
     const next = await portfolioApi.transactions(pid);
     if (still(pid)) setTransactions(next);
+    return true;
   }, []);
 
   return {
