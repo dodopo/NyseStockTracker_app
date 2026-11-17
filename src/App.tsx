@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { LayoutDashboard, LogOut, Plus, RefreshCw, Settings, TrendingUp } from "lucide-react";
+import { Globe, LayoutDashboard, LogOut, Plus, RefreshCw, Settings, TrendingUp } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { FullScreenSpinner, TabButton } from "./components/ui";
 import { AuthScreen } from "./features/auth/AuthScreen";
@@ -10,6 +10,10 @@ import { ConsolidatedDashboard } from "./features/consolidated/ConsolidatedDashb
 import { useAuth } from "./hooks/useAuth";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { usePortfolio } from "./hooks/usePortfolio";
+import { usePortfolios } from "./hooks/usePortfolios";
+import { useGlobalPortfolio } from "./hooks/useGlobalPortfolio";
+import { PortfolioSwitcher } from "./features/portfolios/PortfolioSwitcher";
+import { ManagePortfoliosModal } from "./features/portfolios/ManagePortfoliosModal";
 import { cn } from "./lib/utils";
 import type { AuthUser, ConsolidationMode } from "./types";
 import { APP_NAME, APP_SHORT_NAME, APP_TAGLINE } from "../shared/brand";
@@ -20,19 +24,28 @@ const APP_VERSION = __APP_VERSION__;
 export default function App() {
   const auth = useAuth();
   const user = auth.user;
-  const portfolio = usePortfolio(user?.hasFinnhubKey ? user.id : null);
+  const portfolios = usePortfolios(user?.hasFinnhubKey ? user.id : null);
+  const isGlobal = portfolios.isGlobal;
+  // The active portfolio's data; in the global view, every active portfolio instead.
+  const portfolio = usePortfolio(typeof portfolios.selection === "number" ? portfolios.selection : null, () => void portfolios.refresh());
+  const globalKey =
+    isGlobal && user ? `${user.id}:${portfolios.portfolios.map((p) => `${p.id}.${p.name}.${p.color}.${p.archived}`).join("|")}` : null;
+  const global = useGlobalPortfolio(globalKey);
   const { route, navigate } = useHashRoute();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [mode, setMode] = useState<ConsolidationMode>("SEPARATED");
 
-  const { stocks, tabs, ready: portfolioReady } = portfolio;
-  const activeTab = route.tab === "aba" ? tabs.find((t) => t.id === route.tabId) ?? null : null;
-  const selectedTicker = route.tab === "aba" ? route.ticker : null;
+  const { stocks, tabs } = portfolio;
+  const portfolioReady = portfolios.ready && (isGlobal ? global.ready : portfolio.ready);
+  const showTab = route.tab === "aba" && !isGlobal;
+  const activeTab = showTab ? tabs.find((t) => t.id === route.tabId) ?? null : null;
+  const selectedTicker = showTab ? route.ticker : null;
 
   // On a tab, always show a valid tab and asset: the ones in the URL, or sensible defaults.
   // Also resolves legacy links (#/acoes/AAPL) to the asset's tab.
   useEffect(() => {
-    if (route.tab !== "aba" || !portfolioReady || tabs.length === 0) return;
+    if (route.tab !== "aba" || isGlobal || !portfolioReady || tabs.length === 0) return;
     const fromTicker = route.ticker ? stocks.find((s) => s.ticker === route.ticker) : undefined;
     const tab =
       tabs.find((t) => t.id === route.tabId) ??
@@ -43,14 +56,17 @@ export default function App() {
     if (tab.id !== route.tabId || ticker !== route.ticker) {
       navigate({ tab: "aba", tabId: tab.id, ticker }, { replace: true });
     }
-  }, [route, tabs, stocks, portfolioReady, navigate]);
+  }, [route, tabs, stocks, portfolioReady, isGlobal, navigate]);
 
   const openTab = useCallback((tabId: number) => navigate({ tab: "aba", tabId, ticker: null }), [navigate]);
 
   const openAsset = useCallback(
-    (ticker: string | null, tabId?: number | null) =>
-      navigate({ tab: "aba", tabId: tabId ?? (route.tab === "aba" ? route.tabId : null), ticker }),
-    [navigate, route]
+    (ticker: string | null, tabId?: number | null, portfolioId?: number | null) => {
+      // From the global view: switch to the asset's portfolio first.
+      if (portfolioId && portfolioId !== portfolios.selection) portfolios.select(portfolioId);
+      navigate({ tab: "aba", tabId: tabId ?? (route.tab === "aba" ? route.tabId : null), ticker });
+    },
+    [navigate, route, portfolios]
   );
 
   const logout = useCallback(async () => {
@@ -62,9 +78,11 @@ export default function App() {
   const onRestored = useCallback(
     async (restoredUser: AuthUser) => {
       auth.setUser(restoredUser);
-      await portfolio.reload();
+      // A restore recreates every portfolio with new ids: picking a valid one again
+      // changes the selection, which reloads the data (ids are never reused).
+      await portfolios.refresh();
     },
-    [auth, portfolio]
+    [auth, portfolios]
   );
 
   const onSignedOut = useCallback(() => {
@@ -87,20 +105,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-tv-bg text-tv-text flex flex-col">
+      <ManagePortfoliosModal open={manageOpen} state={portfolios} onClose={() => setManageOpen(false)} />
       <SettingsModal
         open={settingsOpen}
         user={user}
-        portfolio={portfolio}
+        portfolio={isGlobal ? null : portfolio}
+        portfolioName={portfolios.current?.name ?? null}
         onClose={() => setSettingsOpen(false)}
         onRestored={onRestored}
         onUserChanged={auth.setUser}
         onSignedOut={onSignedOut}
       />
 
-      <header className="tv-card border-x-0 border-t-0 rounded-none px-6 py-4 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-tv-accent rounded flex items-center justify-center text-white">
-            <TrendingUp size={24} />
+      <header className="tv-card border-x-0 border-t-0 rounded-none px-4 sm:px-6 py-4 flex justify-between items-center gap-2 sticky top-0 z-50 backdrop-blur-md bg-tv-bg/80">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 bg-tv-accent rounded flex items-center justify-center text-white shrink-0">
+            <TrendingUp size={20} />
           </div>
           <div>
             <h1 className="text-lg font-bold leading-none">
@@ -113,18 +133,19 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right hidden md:block">
+        <div className="flex items-center gap-1 sm:gap-4 shrink-0">
+          <PortfolioSwitcher state={portfolios} onManage={() => setManageOpen(true)} />
+          <div className="text-right hidden lg:block">
             <div className="text-sm font-semibold">{user.displayName || user.email}</div>
             <div className="text-[10px] uppercase tracking-widest text-tv-text/40 font-bold">Sessão protegida</div>
           </div>
 
           <button
             type="button"
-            onClick={() => void portfolio.refreshPrices()}
+            onClick={() => void (isGlobal ? global.refreshPrices() : portfolio.refreshPrices())}
             className={cn(
               "p-2 rounded hover:bg-white/5 transition-all text-tv-text/60",
-              portfolio.refreshing && "animate-spin text-tv-accent"
+              (isGlobal ? global.refreshing : portfolio.refreshing) && "animate-spin text-tv-accent"
             )}
             title="Atualizar preços"
             aria-label="Atualizar preços"
@@ -156,12 +177,12 @@ export default function App() {
 
       <nav className="px-2 sm:px-6 border-b border-tv-border flex overflow-x-auto no-scrollbar" aria-label="Seções">
         <TabButton
-          active={route.tab === "consolidado"}
+          active={route.tab === "consolidado" || isGlobal}
           onClick={() => navigate({ tab: "consolidado" })}
-          icon={LayoutDashboard}
-          label="CONSOLIDADO"
+          icon={isGlobal ? Globe : LayoutDashboard}
+          label={isGlobal ? "VISÃO GLOBAL" : "CONSOLIDADO"}
         />
-        {tabs.map((tab) => (
+        {!isGlobal && tabs.map((tab) => (
           <TabButton
             key={tab.id}
             active={route.tab === "aba" && activeTab?.id === tab.id}
@@ -170,7 +191,7 @@ export default function App() {
             label={tab.name.toUpperCase()}
           />
         ))}
-        <button
+        {!isGlobal && <button
           type="button"
           onClick={() => setSettingsOpen(true)}
           className="flex items-center gap-1 px-3 py-3 text-tv-text/40 hover:text-tv-text hover:bg-white/5 transition-all"
@@ -178,19 +199,19 @@ export default function App() {
           aria-label="Nova aba"
         >
           <Plus size={16} />
-        </button>
+        </button>}
       </nav>
 
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         <AnimatePresence mode="wait">
           <motion.div
-            key={route.tab === "aba" ? `aba-${route.tabId}` : route.tab}
+            key={isGlobal ? "global" : route.tab === "aba" ? `aba-${portfolios.selection}-${route.tabId}` : `consolidado-${portfolios.selection}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {route.tab === "aba" ? (
+            {showTab ? (
               activeTab ? (
               <ActionsDashboard
                 key={activeTab.id}
@@ -203,7 +224,8 @@ export default function App() {
               ) : null
             ) : (
               <ConsolidatedDashboard
-                portfolio={portfolio}
+                data={isGlobal ? global : portfolio}
+                portfolios={isGlobal ? global.portfolios : undefined}
                 mode={mode}
                 onModeChange={setMode}
                 onOpenAsset={openAsset}

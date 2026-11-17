@@ -1,39 +1,16 @@
 import React, { useId, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Loader2, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, Plus, Trash2 } from "lucide-react";
 import { ApiError, errorMessage } from "../../api/client";
 import { Card, ErrorMessage, FieldLabel } from "../../components/ui";
+import { ColorPicker } from "../../components/ColorPicker";
 import { cn } from "../../lib/utils";
 import type { PortfolioState } from "../../hooks/usePortfolio";
 import type { Tab } from "../../types";
 import { ASSET_TYPES, ASSET_TYPE_IDS, TAB_COLORS, type AssetType } from "../../../shared/assetTypes";
 import { firstIssue, tabCreateSchema } from "../../../shared/schemas";
 
-function ColorPicker({ value, onChange, label }: { value: string; onChange: (color: string) => void; label: string }) {
-  return (
-    <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={label}>
-      {TAB_COLORS.map((color) => (
-        <button
-          key={color}
-          type="button"
-          role="radio"
-          aria-checked={value === color}
-          aria-label={`Cor ${color}`}
-          onClick={() => onChange(color)}
-          className={cn(
-            "h-6 w-6 rounded-full border-2 flex items-center justify-center",
-            value === color ? "border-white" : "border-transparent hover:border-white/40"
-          )}
-          style={{ background: color }}
-        >
-          {value === color && <Check size={12} className="text-white" />}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /** Settings → Abas: create, rename, recolor, reorder and delete the user's tabs. */
-export function TabsCard({ portfolio }: { portfolio: PortfolioState }) {
+export function TabsCard({ portfolio, title }: { portfolio: PortfolioState; title?: string }) {
   const { tabs } = portfolio;
   const [error, setError] = useState<string | null>(null);
 
@@ -50,7 +27,7 @@ export function TabsCard({ portfolio }: { portfolio: PortfolioState }) {
   };
 
   return (
-    <Card title="Abas">
+    <Card title={title ?? "Abas"}>
       <p className="text-sm text-tv-text/60 mb-4">
         Cada aba agrupa ativos de um tipo. Você pode ter várias abas do mesmo tipo (por exemplo, "Cripto" e
         "Bitcoin longo prazo"). O tipo não muda depois de criada.

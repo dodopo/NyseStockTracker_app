@@ -1,152 +1,171 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { portfolioApi, tabsApi } from "../api/endpoints";
+import { ApiError } from "../api/client";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
 import type { Stock, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
 
 /**
- * Portfolio data of the logged-in user: assets, transactions and quotes.
- * `userKey` is the user id when the portfolio can be loaded, or null.
+ * Data of one portfolio: tabs, assets, transactions and quotes.
+ * `portfolioId` is the active portfolio, or null (nothing loaded).
+ *
+ * Every request names its portfolio explicitly, and every state update is
+ * dropped if the user switched to another portfolio meanwhile, so a late
+ * response never shows (or lets the user act on) the wrong portfolio.
+ * `onMissing` runs when the server no longer knows the portfolio (deleted on
+ * another device, or ids changed by a restore).
  */
-export function usePortfolio(userKey: number | null) {
+export function usePortfolio(portfolioId: number | null, onMissing?: () => void) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [prices, setPrices] = useState<Record<string, StockPrice>>({});
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  // Which user the current data belongs to; `ready` only once that user's first load finished.
+  // Which portfolio the current data belongs to; `ready` only once its first load finished.
   const [loadedKey, setLoadedKey] = useState<number | null>(null);
+  const keyRef = useRef(portfolioId);
+  keyRef.current = portfolioId;
+  const onMissingRef = useRef(onMissing);
+  onMissingRef.current = onMissing;
 
-  const loadPrices = useCallback(async (tickers: string[]) => {
-    if (!tickers.length) {
-      setPrices({});
-      return;
-    }
-    setPrices(pricesToMap(await fetchQuotes(tickers)));
+  /** The portfolio a call acts on; throws if none is active. */
+  const pinned = () => {
+    const pid = keyRef.current;
+    if (pid === null) throw new Error("Nenhuma carteira ativa");
+    return pid;
+  };
+  const still = (pid: number) => keyRef.current === pid;
+
+  const loadPrices = useCallback(async (pid: number, tickers: string[]) => {
+    const next = tickers.length ? pricesToMap(await fetchQuotes(tickers)) : {};
+    if (still(pid)) setPrices(next);
   }, []);
 
   const reload = useCallback(async () => {
+    const pid = keyRef.current;
+    if (pid === null) return;
     setLoading(true);
     try {
       const [nextTabs, nextStocks, nextTransactions] = await Promise.all([
-        tabsApi.list(),
-        portfolioApi.stocks(),
-        portfolioApi.transactions(),
+        tabsApi.list(pid),
+        portfolioApi.stocks(pid),
+        portfolioApi.transactions(pid),
       ]);
+      if (!still(pid)) return;
       setTabs(nextTabs);
       setStocks(nextStocks);
       setTransactions(nextTransactions);
-      await loadPrices(nextStocks.map((s) => s.ticker));
+      await loadPrices(pid, nextStocks.map((s) => s.ticker));
     } catch (error) {
-      console.error("portfolio load error:", error);
+      if (error instanceof ApiError && error.code === "PORTFOLIO_NOT_FOUND" && still(pid)) onMissingRef.current?.();
+      else console.error("portfolio load error:", error);
     } finally {
-      setLoading(false);
+      if (still(pid)) setLoading(false);
     }
   }, [loadPrices]);
 
-  const reloadTransactions = useCallback(async () => {
-    setTransactions(await portfolioApi.transactions());
-  }, []);
-
   useEffect(() => {
     setLoadedKey(null);
-    if (userKey === null) {
+    if (portfolioId === null) {
       setTabs([]);
       setStocks([]);
       setTransactions([]);
       setPrices({});
       return;
     }
-    let cancelled = false;
     void reload().then(() => {
-      if (!cancelled) setLoadedKey(userKey);
+      if (still(portfolioId)) setLoadedKey(portfolioId);
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [userKey, reload]);
+  }, [portfolioId, reload]);
 
   const refreshPrices = useCallback(async () => {
-    if (!stocks.length) return;
+    const pid = keyRef.current;
+    if (pid === null || !stocks.length) return;
     setRefreshing(true);
     try {
-      await loadPrices(stocks.map((s) => s.ticker));
+      await loadPrices(pid, stocks.map((s) => s.ticker));
     } finally {
       setRefreshing(false);
     }
   }, [stocks, loadPrices]);
 
-  const reloadTabs = useCallback(async () => {
-    setTabs(await tabsApi.list());
+  const reloadTabs = useCallback(async (pid: number) => {
+    const next = await tabsApi.list(pid);
+    if (still(pid)) setTabs(next);
   }, []);
 
   const addStock = useCallback(
     async (stock: { ticker: string; name: string; tabId: number }) => {
-      await portfolioApi.addStock(stock);
-      const [nextStocks, nextTabs] = await Promise.all([portfolioApi.stocks(), tabsApi.list()]);
+      const pid = pinned();
+      await portfolioApi.addStock(pid, stock);
+      const [nextStocks, nextTabs] = await Promise.all([portfolioApi.stocks(pid), tabsApi.list(pid)]);
+      if (!still(pid)) return;
       setStocks(nextStocks);
       setTabs(nextTabs);
-      await loadPrices(nextStocks.map((s) => s.ticker));
+      await loadPrices(pid, nextStocks.map((s) => s.ticker));
     },
     [loadPrices]
   );
 
   const addTab = useCallback(async (tab: { name: string; assetType: AssetType; color: string }) => {
-    const created = await tabsApi.create(tab);
-    await reloadTabs();
+    const pid = pinned();
+    const created = await tabsApi.create(pid, tab);
+    await reloadTabs(pid);
     return created;
   }, [reloadTabs]);
 
   const updateTab = useCallback(async (id: number, changes: { name?: string; color?: string }) => {
-    await tabsApi.update(id, changes);
-    await reloadTabs();
+    const pid = pinned();
+    await tabsApi.update(pid, id, changes);
+    await reloadTabs(pid);
   }, [reloadTabs]);
 
   const reorderTabs = useCallback(async (ids: number[]) => {
-    setTabs(await tabsApi.reorder(ids));
+    const pid = pinned();
+    const next = await tabsApi.reorder(pid, ids);
+    if (still(pid)) setTabs(next);
   }, []);
 
   const deleteTab = useCallback(async (id: number, moveTo?: number) => {
-    await tabsApi.remove(id, moveTo);
-    const [nextTabs, nextStocks] = await Promise.all([tabsApi.list(), portfolioApi.stocks()]);
+    const pid = pinned();
+    await tabsApi.remove(pid, id, moveTo);
+    const [nextTabs, nextStocks] = await Promise.all([tabsApi.list(pid), portfolioApi.stocks(pid)]);
+    if (!still(pid)) return;
     setTabs(nextTabs);
     setStocks(nextStocks);
   }, []);
 
   const deleteStock = useCallback(async (ticker: string) => {
-    await portfolioApi.deleteStock(ticker);
-    const [nextStocks, nextTransactions] = await Promise.all([
-      portfolioApi.stocks(),
-      portfolioApi.transactions(),
-    ]);
+    const pid = pinned();
+    await portfolioApi.deleteStock(pid, ticker);
+    const [nextStocks, nextTransactions] = await Promise.all([portfolioApi.stocks(pid), portfolioApi.transactions(pid)]);
+    if (!still(pid)) return;
     setStocks(nextStocks);
     setTransactions(nextTransactions);
-    void reloadTabs();
+    void reloadTabs(pid);
     setPrices((current) => {
       const { [ticker]: _removed, ...rest } = current;
       return rest;
     });
   }, [reloadTabs]);
 
-  const addTransaction = useCallback(
-    async (tx: Omit<Transaction, "id" | "sort_order">) => {
-      await portfolioApi.addTransaction(tx);
-      await reloadTransactions();
-    },
-    [reloadTransactions]
-  );
+  const addTransaction = useCallback(async (tx: Omit<Transaction, "id" | "sort_order">) => {
+    const pid = pinned();
+    await portfolioApi.addTransaction(pid, tx);
+    const next = await portfolioApi.transactions(pid);
+    if (still(pid)) setTransactions(next);
+  }, []);
 
-  const deleteTransaction = useCallback(
-    async (id: number) => {
-      await portfolioApi.deleteTransaction(id);
-      await reloadTransactions();
-    },
-    [reloadTransactions]
-  );
+  const deleteTransaction = useCallback(async (id: number) => {
+    const pid = pinned();
+    await portfolioApi.deleteTransaction(pid, id);
+    const next = await portfolioApi.transactions(pid);
+    if (still(pid)) setTransactions(next);
+  }, []);
 
   return {
-    ready: userKey !== null && loadedKey === userKey,
+    ready: portfolioId !== null && loadedKey === portfolioId,
     tabs,
     stocks,
     transactions,

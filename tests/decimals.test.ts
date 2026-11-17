@@ -82,7 +82,9 @@ describe("schema de transação (shared/schemas)", () => {
 
 describe("migração v3 e compatibilidade de rollback", () => {
   it("converte REAL antigo em texto exato, mantendo as colunas antigas", () => {
-    const db = openDatabase(":memory:");
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrate(db, 6);
     db.prepare(`INSERT INTO users (email, created_at, updated_at) VALUES ('a@example.com','x','x')`).run();
     db.prepare(`INSERT INTO stocks (user_id, ticker, name, created_at) VALUES (1,'AAPL','Apple','x')`).run();
     // Row written the v0.4.x way (only REAL columns), e.g. after a rollback.
@@ -126,9 +128,7 @@ describe("migração v3 e compatibilidade de rollback", () => {
   it("um banco v2 (v0.4.x) sobe para a versão atual sem perder nada", () => {
     const legacy = new Database(":memory:");
     legacy.pragma("foreign_keys = ON");
-    migrate(legacy);
-    legacy.pragma("user_version = 2");
-    legacy.exec(`ALTER TABLE transactions DROP COLUMN shares_dec; ALTER TABLE transactions DROP COLUMN price_dec;`);
+    migrate(legacy, 2);
     legacy.exec(`
       INSERT INTO users (email, created_at, updated_at) VALUES ('a@example.com','x','x');
       INSERT INTO stocks (user_id, ticker, name, created_at) VALUES (1,'AAPL','Apple','x');

@@ -10,10 +10,12 @@ import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
 import { coinbaseUsdAssets, coinbaseUsdBrl, type CryptoAsset } from "./providers/coinbase";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
-import { ensureDefaultTabs, DEFAULT_TAB, type DB } from "./db";
+import { ensureDefaultTabs, DEFAULT_PORTFOLIO, type DB } from "./db";
 import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
 import { APP_NAME } from "../shared/brand";
+import { HttpError, nowIso, parseBody, wrap } from "./http";
+import { createPortfolios, MAX_PORTFOLIOS, nameKey } from "./portfolios";
 import {
   alpacaKeySchema,
   changeEmailSchema,
@@ -25,6 +27,7 @@ import {
   massiveKeySchema,
   registerSchema,
   stockSchema,
+  portfolioCreateSchema,
   tabCreateSchema,
   tabReorderSchema,
   tabUpdateSchema,
@@ -63,20 +66,6 @@ type UserRow = {
 
 type TxRow = PositionTx & { id: number; price: string };
 
-/** Error whose message is safe to show to the user. */
-class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
-
-/** Validates a request body with a shared zod schema; 400 with the first issue otherwise. */
-function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.output<S> {
-  const result = schema.safeParse(body ?? {});
-  if (!result.success) throw new HttpError(400, firstIssue(result.error));
-  return result.data;
-}
-
 // Canonical decimal strings come from the *_dec columns (exact); REAL columns are legacy.
 const TX_COLUMNS = `id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order`;
 
@@ -87,10 +76,6 @@ async function defaultFinnhubFetch(url: string) {
     throw new Error(`Finnhub HTTP ${r.status}`);
   }
   return r.json();
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function hashToken(token: string) {
@@ -130,15 +115,6 @@ function getSafeUser(user: UserRow | undefined) {
   };
 }
 
-type AsyncHandler = (req: express.Request, res: express.Response) => Promise<unknown> | unknown;
-
-/** Express 4 does not catch rejected promises; this forwards them to the error handler. */
-const wrap =
-  (handler: AsyncHandler): express.RequestHandler =>
-  (req, res, next) => {
-    Promise.resolve(handler(req, res)).catch(next);
-  };
-
 export function createApp(
   db: DB,
   config: AppConfig,
@@ -152,58 +128,76 @@ export function createApp(
   const statsCache = new Map<string, { value: unknown; expiresAt: number }>();
 
   // ---------------------------------------------------------------------------
-  // Prepared statements (all parameterized, all scoped by user_id)
+  // Prepared statements (all parameterized, all scoped by user_id, and by portfolio_id where it applies)
   // ---------------------------------------------------------------------------
   const q = {
     getStocks: db.prepare(
-      `SELECT id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? ORDER BY ticker ASC`
+      `SELECT id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? AND portfolio_id = ? ORDER BY ticker ASC`
     ),
-    getStock: db.prepare(`SELECT id FROM stocks WHERE user_id = ? AND ticker = ?`),
+    getStock: db.prepare(`SELECT id FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
     insertStock: db.prepare(
-      `INSERT INTO stocks (user_id, ticker, name, created_at, asset_type, tab_id) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
     ),
 
     getTabs: db.prepare(
       `SELECT t.id, t.name, t.asset_type, t.color, t.sort_order,
               (SELECT COUNT(*) FROM stocks s WHERE s.tab_id = t.id) AS asset_count
-       FROM tabs t WHERE t.user_id = ? ORDER BY t.sort_order ASC, t.id ASC`
+       FROM tabs t WHERE t.user_id = ? AND t.portfolio_id = ? ORDER BY t.sort_order ASC, t.id ASC`
     ),
-    getTab: db.prepare(`SELECT id, name, asset_type, color, sort_order FROM tabs WHERE user_id = ? AND id = ?`),
+    getTab: db.prepare(`SELECT id, name, asset_type, color, sort_order FROM tabs WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
     insertTab: db.prepare(
-      `INSERT INTO tabs (user_id, name, asset_type, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tabs (user_id, portfolio_id, name, asset_type, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
     ),
-    nextTabOrder: db.prepare(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM tabs WHERE user_id = ?`),
-    updateTab: db.prepare(`UPDATE tabs SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE user_id = ? AND id = ?`),
-    setTabOrder: db.prepare(`UPDATE tabs SET sort_order = ? WHERE user_id = ? AND id = ?`),
-    countTabs: db.prepare(`SELECT COUNT(*) AS n FROM tabs WHERE user_id = ?`),
-    countTabAssets: db.prepare(`SELECT COUNT(*) AS n FROM stocks WHERE user_id = ? AND tab_id = ?`),
-    moveTabAssets: db.prepare(`UPDATE stocks SET tab_id = ? WHERE user_id = ? AND tab_id = ?`),
-    deleteTab: db.prepare(`DELETE FROM tabs WHERE user_id = ? AND id = ?`),
-    deleteAllTabs: db.prepare(`DELETE FROM tabs WHERE user_id = ?`),
-    deleteStock: db.prepare(`DELETE FROM stocks WHERE user_id = ? AND ticker = ?`),
-    deleteAllStocks: db.prepare(`DELETE FROM stocks WHERE user_id = ?`),
+    nextTabOrder: db.prepare(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM tabs WHERE user_id = ? AND portfolio_id = ?`),
+    updateTab: db.prepare(`UPDATE tabs SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
+    setTabOrder: db.prepare(`UPDATE tabs SET sort_order = ? WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
+    countTabs: db.prepare(`SELECT COUNT(*) AS n FROM tabs WHERE user_id = ? AND portfolio_id = ?`),
+    countTabAssets: db.prepare(`SELECT COUNT(*) AS n FROM stocks WHERE user_id = ? AND portfolio_id = ? AND tab_id = ?`),
+    moveTabAssets: db.prepare(`UPDATE stocks SET tab_id = ? WHERE user_id = ? AND portfolio_id = ? AND tab_id = ?`),
+    deleteTab: db.prepare(`DELETE FROM tabs WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
+    deleteStock: db.prepare(`DELETE FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
 
     getTxAsc: db.prepare(
-      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? ORDER BY date ASC, sort_order ASC, id ASC`
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? AND portfolio_id = ? ORDER BY date ASC, sort_order ASC, id ASC`
     ),
     getTxByTicker: db.prepare(
-      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? AND ticker = ?
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? AND portfolio_id = ? AND ticker = ?
        ORDER BY date ASC, sort_order ASC, id ASC`
     ),
     getTxDesc: db.prepare(
-      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? ORDER BY date DESC, sort_order DESC, id DESC`
+      `SELECT ${TX_COLUMNS} FROM transactions WHERE user_id = ? AND portfolio_id = ? ORDER BY date DESC, sort_order DESC, id DESC`
     ),
-    getTxById: db.prepare(`SELECT id, ticker FROM transactions WHERE user_id = ? AND id = ?`),
+    getTxById: db.prepare(`SELECT id, ticker FROM transactions WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
     insertTx: db.prepare(
-      `INSERT INTO transactions (user_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO transactions (user_id, portfolio_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     deleteUser: db.prepare(`DELETE FROM users WHERE id = ?`),
-    deleteTx: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND id = ?`),
-    deleteTxByTicker: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND ticker = ?`),
-    deleteAllTx: db.prepare(`DELETE FROM transactions WHERE user_id = ?`),
+    // Account-wide totals: never more than a backup of this account can restore.
+    countUserStocks: db.prepare(`SELECT COUNT(*) AS n FROM stocks WHERE user_id = ?`),
+    countUserTx: db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ?`),
+    // Whole account (backup): every portfolio, archived ones included.
+    exportPortfolios: db.prepare(
+      `SELECT id, name, color, sort_order, archived_at FROM portfolios WHERE user_id = ? ORDER BY sort_order, id`
+    ),
+    exportTabs: db.prepare(
+      `SELECT id, portfolio_id, name, asset_type, color, sort_order FROM tabs WHERE user_id = ? ORDER BY portfolio_id, sort_order, id`
+    ),
+    exportStocks: db.prepare(
+      `SELECT id, portfolio_id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? ORDER BY portfolio_id, ticker`
+    ),
+    exportTx: db.prepare(
+      `SELECT id, portfolio_id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order
+       FROM transactions WHERE user_id = ? ORDER BY portfolio_id, date DESC, sort_order DESC, id DESC`
+    ),
+    deleteAllPortfolios: db.prepare(`DELETE FROM portfolios WHERE user_id = ?`),
+    insertPortfolioFromBackup: db.prepare(
+      `INSERT INTO portfolios (user_id, name, color, sort_order, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ),
+    deleteTx: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
+    deleteTxByTicker: db.prepare(`DELETE FROM transactions WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
     nextSortOrder: db.prepare(
-      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM transactions WHERE user_id = ?`
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM transactions WHERE user_id = ? AND portfolio_id = ?`
     ),
 
     getUserByEmail: db.prepare(`SELECT * FROM users WHERE email = ?`),
@@ -254,12 +248,14 @@ export function createApp(
   /** Writes the exact decimal columns and the legacy REAL columns (rollback compatibility). */
   function insertTransaction(
     userId: number,
+    portfolioId: number,
     tx: { ticker: string; type: "BUY" | "SELL"; shares: string; price: string; date: string },
     createdAt: string,
     sortOrder: number
   ) {
     return q.insertTx.run(
       userId,
+      portfolioId,
       tx.ticker,
       tx.type,
       Number(tx.shares),
@@ -614,7 +610,7 @@ export function createApp(
         const info = q.insertUser.run(email, displayName, passwordHash, timestamp, timestamp);
         const id = Number(info.lastInsertRowid);
         q.upsertSettings.run(id, config.port, "dark", "USD", 0, timestamp, timestamp);
-        q.insertTab.run(id, DEFAULT_TAB.name, DEFAULT_TAB.assetType, DEFAULT_TAB.color, 1, timestamp);
+        portfolios.createPortfolio(id, DEFAULT_PORTFOLIO.name, DEFAULT_PORTFOLIO.color);
         return id;
       })();
 
@@ -795,24 +791,35 @@ export function createApp(
   );
 
   // ---------------------------------------------------------------------------
-  // Portfolio
+  // Portfolios (carteiras): routes and per-request scope (server/portfolios.ts)
   // ---------------------------------------------------------------------------
-  app.get("/api/stocks", requireAuth, (_req, res) => {
-    res.json(q.getStocks.all(currentUser(res).id));
+  const portfolios = createPortfolios(db, { requireAuth, currentUser, checkPassword, authLimiter });
+  const { requirePortfolio, currentPortfolio } = portfolios;
+  portfolios.register(app);
+
+  // ---------------------------------------------------------------------------
+  // Assets of the active portfolio
+  // ---------------------------------------------------------------------------
+  app.get("/api/stocks", requireAuth, requirePortfolio, (_req, res) => {
+    res.json(q.getStocks.all(currentUser(res).id, currentPortfolio(res)));
   });
 
-  app.post("/api/stocks", requireAuth, (req, res) => {
+  app.post("/api/stocks", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const { ticker, name, tabId } = parseBody(stockSchema, req.body);
-    const tab = q.getTab.get(user.id, tabId) as { id: number; asset_type: string } | undefined;
+    const tab = q.getTab.get(user.id, pf, tabId) as { id: number; asset_type: string } | undefined;
     if (!tab) throw new HttpError(404, "Aba não encontrada");
     const assetType = assetTypeOfTicker(ticker);
     if (tab.asset_type !== assetType) {
       throw new HttpError(400, "Este ativo não é do tipo desta aba");
     }
-    if (q.getStock.get(user.id, ticker)) throw new HttpError(400, "Este ativo já está na carteira");
+    if (q.getStock.get(user.id, pf, ticker)) throw new HttpError(400, "Este ativo já está na carteira");
+    if ((q.countUserStocks.get(user.id) as { n: number }).n >= LIMITS.importStocksMax) {
+      throw new HttpError(400, `Limite de ${LIMITS.importStocksMax} ativos na conta (somando todas as carteiras)`);
+    }
 
-    q.insertStock.run(user.id, ticker, name, nowIso(), assetType, tab.id);
+    q.insertStock.run(user.id, pf, ticker, name, nowIso(), assetType, tab.id);
     res.status(201).json({ ticker, name, assetType, tabId: tab.id });
   });
 
@@ -829,49 +836,53 @@ export function createApp(
     assetCount: t.asset_count ?? 0,
   });
 
-  app.get("/api/tabs", requireAuth, (_req, res) => {
-    res.json((q.getTabs.all(currentUser(res).id) as TabRow[]).map(tabDto));
+  app.get("/api/tabs", requireAuth, requirePortfolio, (_req, res) => {
+    res.json((q.getTabs.all(currentUser(res).id, currentPortfolio(res)) as TabRow[]).map(tabDto));
   });
 
-  app.post("/api/tabs", requireAuth, (req, res) => {
+  app.post("/api/tabs", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const { name, assetType, color } = parseBody(tabCreateSchema, req.body);
-    if ((q.countTabs.get(user.id) as { n: number }).n >= 20) throw new HttpError(400, "Limite de 20 abas");
-    const order = (q.nextTabOrder.get(user.id) as { n: number }).n;
-    const id = Number(q.insertTab.run(user.id, name, assetType, color, order, nowIso()).lastInsertRowid);
-    res.status(201).json(tabDto({ ...(q.getTab.get(user.id, id) as TabRow), asset_count: 0 }));
+    if ((q.countTabs.get(user.id, pf) as { n: number }).n >= 20) throw new HttpError(400, "Limite de 20 abas");
+    const order = (q.nextTabOrder.get(user.id, pf) as { n: number }).n;
+    const id = Number(q.insertTab.run(user.id, pf, name, assetType, color, order, nowIso()).lastInsertRowid);
+    res.status(201).json(tabDto({ ...(q.getTab.get(user.id, pf, id) as TabRow), asset_count: 0 }));
   });
 
-  app.patch("/api/tabs/:id", requireAuth, (req, res) => {
+  app.patch("/api/tabs/:id", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const id = Number(req.params.id);
-    if (!Number.isSafeInteger(id) || !q.getTab.get(user.id, id)) throw new HttpError(404, "Aba não encontrada");
+    if (!Number.isSafeInteger(id) || !q.getTab.get(user.id, pf, id)) throw new HttpError(404, "Aba não encontrada");
     const { name, color } = parseBody(tabUpdateSchema, req.body);
-    q.updateTab.run(name ?? null, color ?? null, user.id, id);
-    res.json(tabDto(q.getTab.get(user.id, id) as TabRow));
+    q.updateTab.run(name ?? null, color ?? null, user.id, pf, id);
+    res.json(tabDto(q.getTab.get(user.id, pf, id) as TabRow));
   });
 
-  app.post("/api/tabs/reorder", requireAuth, (req, res) => {
+  app.post("/api/tabs/reorder", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const { ids } = parseBody(tabReorderSchema, req.body);
-    const mine = new Set((q.getTabs.all(user.id) as TabRow[]).map((t) => t.id));
+    const mine = new Set((q.getTabs.all(user.id, pf) as TabRow[]).map((t) => t.id));
     if (ids.length !== mine.size || ids.some((id) => !mine.has(id)) || new Set(ids).size !== ids.length) {
       throw new HttpError(400, "A nova ordem precisa conter todas as suas abas, uma vez cada");
     }
-    db.transaction(() => ids.forEach((id, i) => q.setTabOrder.run(i + 1, user.id, id)))();
-    res.json((q.getTabs.all(user.id) as TabRow[]).map(tabDto));
+    db.transaction(() => ids.forEach((id, i) => q.setTabOrder.run(i + 1, user.id, pf, id)))();
+    res.json((q.getTabs.all(user.id, pf) as TabRow[]).map(tabDto));
   });
 
-  app.delete("/api/tabs/:id", requireAuth, (req, res) => {
+  app.delete("/api/tabs/:id", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const id = Number(req.params.id);
-    const tab = Number.isSafeInteger(id) ? (q.getTab.get(user.id, id) as TabRow | undefined) : undefined;
+    const tab = Number.isSafeInteger(id) ? (q.getTab.get(user.id, pf, id) as TabRow | undefined) : undefined;
     if (!tab) throw new HttpError(404, "Aba não encontrada");
-    if ((q.countTabs.get(user.id) as { n: number }).n <= 1) {
+    if ((q.countTabs.get(user.id, pf) as { n: number }).n <= 1) {
       throw new HttpError(400, "Não é possível excluir a única aba");
     }
 
-    const count = (q.countTabAssets.get(user.id, id) as { n: number }).n;
+    const count = (q.countTabAssets.get(user.id, pf, id) as { n: number }).n;
     if (count > 0) {
       // Never delete assets or trades silently: they must be moved to another tab of the same type.
       const moveTo = Number(req.query.moveTo);
@@ -879,55 +890,61 @@ export function createApp(
         res.status(409).json({ error: `Esta aba tem ${count} ativo(s). Escolha para qual aba movê-los.`, code: "TAB_NOT_EMPTY", count });
         return;
       }
-      const target = Number.isSafeInteger(moveTo) ? (q.getTab.get(user.id, moveTo) as TabRow | undefined) : undefined;
+      const target = Number.isSafeInteger(moveTo) ? (q.getTab.get(user.id, pf, moveTo) as TabRow | undefined) : undefined;
       if (!target || target.id === id) throw new HttpError(400, "Aba de destino inválida");
       if (target.asset_type !== tab.asset_type) {
         throw new HttpError(400, "A aba de destino precisa ser do mesmo tipo de ativo");
       }
       db.transaction(() => {
-        q.moveTabAssets.run(target.id, user.id, id);
-        q.deleteTab.run(user.id, id);
+        q.moveTabAssets.run(target.id, user.id, pf, id);
+        q.deleteTab.run(user.id, pf, id);
       })();
     } else {
-      q.deleteTab.run(user.id, id);
+      q.deleteTab.run(user.id, pf, id);
     }
     res.status(204).send();
   });
 
-  app.delete("/api/stocks/:ticker", requireAuth, (req, res) => {
+  app.delete("/api/stocks/:ticker", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const ticker = normalizeTicker(req.params.ticker);
     if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
 
     db.transaction(() => {
-      q.deleteTxByTicker.run(user.id, ticker);
-      q.deleteStock.run(user.id, ticker);
+      q.deleteTxByTicker.run(user.id, pf, ticker);
+      q.deleteStock.run(user.id, pf, ticker);
     })();
     res.status(204).send();
   });
 
-  app.get("/api/transactions", requireAuth, (req, res) => {
+  app.get("/api/transactions", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     if (req.query.ticker) {
       const ticker = normalizeTicker(req.query.ticker);
       if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
-      return res.json(q.getTxByTicker.all(user.id, ticker));
+      return res.json(q.getTxByTicker.all(user.id, pf, ticker));
     }
     const order = String(req.query.order ?? "").toLowerCase();
-    res.json(order === "desc" ? q.getTxDesc.all(user.id) : q.getTxAsc.all(user.id));
+    res.json(order === "desc" ? q.getTxDesc.all(user.id, pf) : q.getTxAsc.all(user.id, pf));
   });
 
-  app.post("/api/transactions", requireAuth, (req, res) => {
+  app.post("/api/transactions", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const tx = parseBody(transactionSchema, req.body);
     const { ticker, type, shares, date } = tx;
-    if (!q.getStock.get(user.id, ticker)) {
+    if (!q.getStock.get(user.id, pf, ticker)) {
       throw new HttpError(400, "Ticker not found in portfolio. Add the stock first.");
+    }
+    if ((q.countUserTx.get(user.id) as { n: number }).n >= LIMITS.importTransactionsMax) {
+      throw new HttpError(400, `Limite de ${LIMITS.importTransactionsMax} operações na conta (somando todas as carteiras)`);
     }
 
     const id = db.transaction(() => {
-      const nextSortOrder = Number((q.nextSortOrder.get(user.id) as { next: number }).next);
-      const existing = q.getTxByTicker.all(user.id, ticker) as TxRow[];
+      const nextSortOrder = Number((q.nextSortOrder.get(user.id, pf) as { next: number }).next);
+      const existing = q.getTxByTicker.all(user.id, pf, ticker) as TxRow[];
 
       if (
         type === "SELL" &&
@@ -936,26 +953,27 @@ export function createApp(
         throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
       }
 
-      return insertTransaction(user.id, tx, nowIso(), nextSortOrder).lastInsertRowid;
+      return insertTransaction(user.id, pf, tx, nowIso(), nextSortOrder).lastInsertRowid;
     })();
 
     res.status(201).json({ success: true, id: Number(id) });
   });
 
-  app.delete("/api/transactions/:id", requireAuth, (req, res) => {
+  app.delete("/api/transactions/:id", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
+    const pf = currentPortfolio(res);
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Invalid id");
 
     db.transaction(() => {
-      const tx = q.getTxById.get(user.id, id) as { id: number; ticker: string } | undefined;
+      const tx = q.getTxById.get(user.id, pf, id) as { id: number; ticker: string } | undefined;
       if (!tx) return; // Not found or not yours: idempotent 204, reveals nothing.
 
-      const remaining = (q.getTxByTicker.all(user.id, tx.ticker) as TxRow[]).filter((t) => t.id !== id);
+      const remaining = (q.getTxByTicker.all(user.id, pf, tx.ticker) as TxRow[]).filter((t) => t.id !== id);
       if (findNegativePosition(remaining)) {
         throw new HttpError(409, "Deleting this transaction would make the position negative");
       }
-      q.deleteTx.run(user.id, id);
+      q.deleteTx.run(user.id, pf, id);
     })();
 
     res.status(204).send();
@@ -969,9 +987,10 @@ export function createApp(
     const settings = q.getSettings.get(user.id) as { include_secrets_in_backup?: number } | undefined;
     const includeSecrets = Number(settings?.include_secrets_in_backup ?? 0) === 1;
 
+    // Version 2 (v0.13.0): the whole account, every portfolio, rows tagged with portfolio_id.
     res.json({
       app: APP_NAME,
-      version: 1,
+      version: 2,
       exportedAt: nowIso(),
       user: {
         email: user.email,
@@ -982,15 +1001,10 @@ export function createApp(
         last_login_at: user.last_login_at,
       },
       settings,
-      tabs: (q.getTabs.all(user.id) as TabRow[]).map((t) => ({
-        id: t.id,
-        name: t.name,
-        asset_type: t.asset_type,
-        color: t.color,
-        sort_order: t.sort_order,
-      })),
-      stocks: q.getStocks.all(user.id),
-      transactions: q.getTxDesc.all(user.id),
+      portfolios: q.exportPortfolios.all(user.id),
+      tabs: q.exportTabs.all(user.id),
+      stocks: q.exportStocks.all(user.id),
+      transactions: q.exportTx.all(user.id),
     });
   });
 
@@ -1045,44 +1059,97 @@ export function createApp(
         nowIso()
       );
 
-      q.deleteAllTx.run(user.id);
-      q.deleteAllStocks.run(user.id);
-      q.deleteAllTabs.run(user.id);
+      // Restore replaces the whole account: every portfolio goes (ON DELETE CASCADE).
+      q.deleteAllPortfolios.run(user.id);
 
-      // Tabs from the backup (v0.8.0+); older backups have none and get default tabs below.
-      const tabIdMap = new Map<number, { id: number; assetType: string }>();
-      const backupTabs: any[] = Array.isArray(backup.tabs) ? backup.tabs.slice(0, 20) : [];
+      // Portfolios (v0.13.0+). Older backups have none: everything goes to "Carteira principal".
+      // A v2 backup must map completely: any bad portfolio or row pointing to an unknown
+      // portfolio aborts the whole restore (nothing is changed), never a silent partial one.
+      const portfolioIdMap = new Map<number, number>();
+      const usedNames = new Set<string>();
+      const isV2 = Array.isArray(backup.portfolios);
+      const backupPortfolios: any[] = isV2 ? backup.portfolios : [];
+      if (backupPortfolios.length > MAX_PORTFOLIOS) throw new HttpError(400, `Backup inválido: mais de ${MAX_PORTFOLIOS} carteiras`);
+      for (const p of backupPortfolios) {
+        const parsed = portfolioCreateSchema.safeParse({ name: p?.name, color: p?.color });
+        const oldId = Number(p?.id);
+        if (!parsed.success || !Number.isSafeInteger(oldId) || portfolioIdMap.has(oldId)) {
+          throw new HttpError(400, `Backup inválido: carteira "${shortText(p?.name, 40) || "sem nome"}" com dados inválidos`);
+        }
+        // Same name twice (e.g. "Ações" and "AÇÕES" from an older version): keep both, renamed.
+        let name = parsed.data.name;
+        for (let n = 2; usedNames.has(nameKey(name)); n++) name = `${parsed.data.name.slice(0, 34)} (${n})`;
+        usedNames.add(nameKey(name));
+        parsed.data.name = name;
+        const archivedAt = typeof p?.archived_at === "string" && p.archived_at ? shortText(p.archived_at, 40) || nowIso() : null;
+        const newId = Number(
+          q.insertPortfolioFromBackup.run(user.id, parsed.data.name, parsed.data.color, portfolioIdMap.size + 1, archivedAt, nowIso(), nowIso())
+            .lastInsertRowid
+        );
+        portfolioIdMap.set(oldId, newId);
+      }
+      if (portfolioIdMap.size === 0) {
+        const id = Number(
+          q.insertPortfolioFromBackup.run(user.id, DEFAULT_PORTFOLIO.name, DEFAULT_PORTFOLIO.color, 1, null, nowIso(), nowIso()).lastInsertRowid
+        );
+        portfolioIdMap.set(-1, id);
+      }
+      // At least one portfolio stays active.
+      db.prepare(
+        `UPDATE portfolios SET archived_at = NULL WHERE user_id = ? AND id = (SELECT id FROM portfolios WHERE user_id = ? ORDER BY sort_order, id LIMIT 1)
+         AND NOT EXISTS (SELECT 1 FROM portfolios WHERE user_id = ? AND archived_at IS NULL)`
+      ).run(user.id, user.id, user.id);
+      const firstPortfolio = [...portfolioIdMap.values()][0];
+      // v1 rows have no portfolio_id: first portfolio. A v2 row must point to a portfolio of the backup.
+      const portfolioOf = (row: any): number => {
+        if (!isV2 || row?.portfolio_id === undefined || row?.portfolio_id === null) return firstPortfolio;
+        const id = portfolioIdMap.get(Number(row.portfolio_id));
+        if (id === undefined) throw new HttpError(400, "Backup inválido: há itens de uma carteira que não está no arquivo");
+        return id;
+      };
+
+      // Tabs (v0.8.0+); older backups have none and get default tabs below.
+      const tabIdMap = new Map<number, { id: number; assetType: string; portfolioId: number }>();
+      const tabsPerPortfolio = new Map<number, number>();
+      const backupTabs: any[] = Array.isArray(backup.tabs) ? backup.tabs.slice(0, 20 * MAX_PORTFOLIOS) : [];
       for (const t of backupTabs) {
         const parsed = tabCreateSchema.safeParse({ name: t?.name, assetType: t?.asset_type, color: t?.color });
+        const portfolioId = portfolioOf(t);
         if (!parsed.success || !Number.isSafeInteger(Number(t?.id))) continue;
-        const order = (q.nextTabOrder.get(user.id) as { n: number }).n;
+        const count = tabsPerPortfolio.get(portfolioId) ?? 0;
+        if (count >= 20) continue;
+        tabsPerPortfolio.set(portfolioId, count + 1);
+        const order = (q.nextTabOrder.get(user.id, portfolioId) as { n: number }).n;
         const newId = Number(
-          q.insertTab.run(user.id, parsed.data.name, parsed.data.assetType, parsed.data.color, order, nowIso()).lastInsertRowid
+          q.insertTab.run(user.id, portfolioId, parsed.data.name, parsed.data.assetType, parsed.data.color, order, nowIso()).lastInsertRowid
         );
-        tabIdMap.set(Number(t.id), { id: newId, assetType: parsed.data.assetType });
+        tabIdMap.set(Number(t.id), { id: newId, assetType: parsed.data.assetType, portfolioId });
       }
 
-      const knownTickers = new Set<string>();
-      for (const s of stocks) {
-        const ticker = normalizeTicker(s?.ticker);
-        const name = shortText(s?.name, LIMITS.stockNameMax);
-        if (!isValidTicker(ticker) || !name || knownTickers.has(ticker)) {
+      const knownAssets = new Set<string>(); // `${portfolioId}:${ticker}`
+      for (const st of stocks) {
+        const ticker = normalizeTicker(st?.ticker);
+        const name = shortText(st?.name, LIMITS.stockNameMax);
+        const portfolioId = portfolioOf(st);
+        if (!isValidTicker(ticker) || !name || knownAssets.has(`${portfolioId}:${ticker}`)) {
           skipped++;
           continue;
         }
         const assetType = assetTypeOfTicker(ticker);
-        const mapped = tabIdMap.get(Number(s?.tab_id));
-        const tabId = mapped && mapped.assetType === assetType ? mapped.id : null; // null: default tab below
-        q.insertStock.run(user.id, ticker, name, shortText(s?.created_at) || nowIso(), assetType, tabId);
-        knownTickers.add(ticker);
+        const mapped = tabIdMap.get(Number(st?.tab_id));
+        // null: default tab below. A tab of another portfolio or type is never used.
+        const tabId = mapped && mapped.assetType === assetType && mapped.portfolioId === portfolioId ? mapped.id : null;
+        q.insertStock.run(user.id, portfolioId, ticker, name, shortText(st?.created_at) || nowIso(), assetType, tabId);
+        knownAssets.add(`${portfolioId}:${ticker}`);
       }
 
-      const imported: PositionTx[] = [];
+      const imported = new Map<number, PositionTx[]>(); // per portfolio
       let fallbackSortOrder = 1;
       for (const tr of transactions) {
         // Accepts numbers (backups from v0.4.x and older) or exact decimal strings (v0.5.0+).
         const parsed = transactionSchema.safeParse(tr ?? {});
-        if (!parsed.success || !knownTickers.has(parsed.data.ticker)) {
+        const portfolioId = portfolioOf(tr);
+        if (!parsed.success || !knownAssets.has(`${portfolioId}:${parsed.data.ticker}`)) {
           skipped++;
           continue;
         }
@@ -1090,8 +1157,9 @@ export function createApp(
         const sortRaw = Number(tr?.sort_order);
         const sortOrder = Number.isSafeInteger(sortRaw) && sortRaw > 0 ? sortRaw : fallbackSortOrder;
 
-        const info = insertTransaction(user.id, tx, shortText(tr?.created_at) || nowIso(), sortOrder);
-        imported.push({
+        const info = insertTransaction(user.id, portfolioId, tx, shortText(tr?.created_at) || nowIso(), sortOrder);
+        const list = imported.get(portfolioId) ?? [];
+        list.push({
           id: Number(info.lastInsertRowid),
           ticker: tx.ticker,
           type: tx.type,
@@ -1099,13 +1167,16 @@ export function createApp(
           date: tx.date,
           sort_order: sortOrder,
         });
+        imported.set(portfolioId, list);
         fallbackSortOrder += 1;
       }
 
-      const negative = findNegativePosition(imported);
-      if (negative) {
-        // Throwing inside the transaction rolls back the whole restore.
-        throw new HttpError(400, `Backup inválido: posição negativa em ${negative}`);
+      for (const list of imported.values()) {
+        const negative = findNegativePosition(list);
+        if (negative) {
+          // Throwing inside the transaction rolls back the whole restore.
+          throw new HttpError(400, `Backup inválido: posição negativa em ${negative}`);
+        }
       }
 
       // Assets without a valid tab (old backups) go to a default tab of their type.
@@ -1117,9 +1188,16 @@ export function createApp(
       skipped,
       user: getSafeUser(q.getUserById.get(user.id) as UserRow),
       settings: q.getSettings.get(user.id),
-      tabs: (q.getTabs.all(user.id) as TabRow[]).map(tabDto),
-      stocks: q.getStocks.all(user.id),
-      transactions: q.getTxDesc.all(user.id),
+      portfolios: portfolios.list(user.id),
+      // The first active portfolio, as before v0.13.0.
+      ...(() => {
+        const first = portfolios.list(user.id).find((p) => !p.archived)!;
+        return {
+          tabs: (q.getTabs.all(user.id, first.id) as TabRow[]).map(tabDto),
+          stocks: q.getStocks.all(user.id, first.id),
+          transactions: q.getTxDesc.all(user.id, first.id),
+        };
+      })(),
     });
   }));
 
@@ -1374,7 +1452,7 @@ export function createApp(
       if (res.headersSent) return next(err);
 
       if (err instanceof HttpError) {
-        return res.status(err.status).json({ error: err.message });
+        return res.status(err.status).json(err.code ? { error: err.message, code: err.code } : { error: err.message });
       }
       if (err?.type === "entity.too.large") {
         return res.status(413).json({ error: "Request body too large" });

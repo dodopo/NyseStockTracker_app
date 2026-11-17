@@ -164,8 +164,21 @@ O comando, em ordem:
 3. faz backup do banco;
 4. instala a versão nova, compila e roda os testes **com o app antigo ainda no ar**. Se algo
    falhar, reinstala a versão anterior e o app nem é reiniciado;
-5. reinicia o serviço e espera `/api/health` responder com a versão nova. Se não responder,
-   reinstala a anterior, reinicia e avisa.
+5. faz **outro backup logo antes de reiniciar**, reinicia o serviço e espera `/api/health`
+   responder com a versão nova. Se não responder: para o serviço, reinstala a anterior e **devolve
+   o banco desse último backup** (a versão nova pode ter migrado o banco ao subir). A cópia do
+   backup é feita e conferida antes de mexer no banco; o banco da tentativa fica guardado como
+   `portfolio.db.falhou-<data>`, nunca é apagado. Se não der para restaurar e o banco tiver mudado,
+   o serviço **fica parado de propósito** (a versão anterior não roda direito num banco migrado) e
+   a mensagem diz o que fazer.
+
+Desde a v0.13.0 o comando também **confere se ele mesmo é o publicado na versão pedida** e, se
+não for, para antes de qualquer coisa. Para instalar ou trocar o comando (e antes de atualizar
+para uma versão cujo `scripts/update.sh` mudou):
+
+```bash
+sudo sh -c 'umask 022 && sudo -u dodopoam -H sh -c "cd /Users/dodopoam/app && git fetch --tags --quiet && git show vX.Y.Z:scripts/update.sh" > /usr/local/sbin/dodopoam-update.novo && chmod 755 /usr/local/sbin/dodopoam-update.novo && mv /usr/local/sbin/dodopoam-update.novo /usr/local/sbin/dodopoam-update'
+```
 
 Configurações opcionais (variáveis de ambiente): `DAM_SERVICE_USER`, `DAM_APP_DIR`,
 `DAM_LAUNCHD_LABEL`, `DAM_PORT` (padrão 3100) e `DAM_HEALTH_TIMEOUT` (padrão 60 s). Os nomes antigos `NYSE_*` continuam aceitos. Exemplo:
@@ -246,15 +259,19 @@ sudo launchctl kickstart -k system/local.dodopoam.app
 
 ## Voltar para a versão anterior (rollback)
 
-O jeito mais simples é o próprio comando, apontando para a versão anterior:
+O jeito mais simples é o próprio comando, apontando para a versão anterior (se o
+`scripts/update.sh` daquela versão for diferente, o comando recusa; nesse caso use o rollback
+manual abaixo):
 
 ```bash
 sudo /usr/local/sbin/dodopoam-update vA.B.C
 ```
 
 Voltar da v0.5.x para a v0.4.x **não exige restaurar o banco**: a migração da v0.5.0 só
-acrescenta colunas e continua preenchendo as antigas. Para versões que avisarem o contrário no
-CHANGELOG, faça o rollback manual com o backup tirado **antes** da atualização:
+acrescenta colunas e continua preenchendo as antigas. **A v0.13.0 muda a estrutura do banco
+(carteiras): voltar dela para a v0.12.x exige restaurar o backup tirado antes da atualização**
+(o que for salvo na v0.13.0 depois disso se perde). Para essas versões, faça o rollback manual com
+o backup tirado **antes** da atualização:
 
 1. Pare o app:
 

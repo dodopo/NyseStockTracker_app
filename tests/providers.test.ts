@@ -413,12 +413,11 @@ describe("chave da Alpaca e rota das médias", () => {
 describe("migração v6", () => {
   it("banco da v0.8 ganha as colunas da chave da Alpaca, sem perder nada", () => {
     const legacy = new Database(":memory:");
-    migrate(legacy);
+    migrate(legacy, 5);
     legacy.exec("INSERT INTO users (email, created_at, updated_at, massive_key) VALUES ('a@b.c', 'x', 'x', 'mk')");
-    legacy.exec("ALTER TABLE users DROP COLUMN alpaca_key_id; ALTER TABLE users DROP COLUMN alpaca_secret; PRAGMA user_version = 5;");
     migrate(legacy);
     expect(legacy.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(6);
     expect(legacy.prepare("SELECT massive_key, alpaca_key_id FROM users").get()).toEqual({ massive_key: "mk", alpaca_key_id: null });
   });
 });

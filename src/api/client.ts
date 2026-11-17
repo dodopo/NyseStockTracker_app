@@ -11,7 +11,8 @@ export class ApiError extends Error {
  */
 export async function api<T = unknown>(
   path: string,
-  options: { method?: string; body?: unknown } = {}
+  /** portfolioId: the portfolio a scoped route (assets, tabs, trades) acts on, sent as X-Portfolio-Id. */
+  options: { method?: string; body?: unknown; portfolioId?: number } = {}
 ): Promise<T> {
   const hasBody = options.body !== undefined;
 
@@ -20,7 +21,10 @@ export async function api<T = unknown>(
     res = await fetch(path, {
       method: options.method ?? "GET",
       credentials: "same-origin",
-      headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+      headers: {
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        ...(options.portfolioId !== undefined ? { "X-Portfolio-Id": String(options.portfolioId) } : {}),
+      },
       body: hasBody ? JSON.stringify(options.body) : undefined,
     });
   } catch {

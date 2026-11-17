@@ -5,15 +5,17 @@ import { Donut } from "../../components/Donut";
 import { marketApi } from "../../api/endpoints";
 import { errorMessage } from "../../api/client";
 import { cn, formatCurrency, formatPrice, formatQuantity, type Currency } from "../../lib/utils";
-import type { PortfolioState } from "../../hooks/usePortfolio";
-import type { ConsolidationMode, PortfolioItem } from "../../types";
-import { calculatePosition } from "../../../shared/positions";
+import type { StockPrice } from "../../services/marketService";
+import type { ConsolidationMode, Portfolio, PortfolioItem, Stock, Tab, Transaction } from "../../types";
+import { buildRows } from "./rows";
 import { displaySymbol } from "../../../shared/assetTypes";
 import { NO_TAB_KEY, allocationSlices, passesTabFilter, toggleTabFilter, type TabFilterKey } from "../../../shared/allocation";
 
 const TAB_FILTER_KEY = "nyse.consolidated.tabs";
 const CURRENCY_KEY = "nyse.consolidated.currency";
 const ALLOC_KEY = "nyse.consolidated.allocBy";
+const PORTFOLIO_FILTER_KEY = "dam.global.portfolios";
+type AllocBy = "portfolio" | "tab" | "asset";
 /** Colors for "Por ativo" slices (tab slices use the tab color). */
 const ASSET_COLORS = ["#2962ff", "#089981", "#f7931a", "#ab47bc", "#f23645", "#26a69a", "#ffb74d", "#ec407a", "#7e57c2", "#78909c"];
 const NO_TAB_COLOR = "#78909c";
@@ -41,30 +43,44 @@ type FxState =
   | { status: "error"; message: string };
 
 export function ConsolidatedDashboard({
-  portfolio,
+  data,
+  portfolios,
   mode,
   onModeChange,
   onOpenAsset,
 }: {
-  portfolio: PortfolioState;
+  /** Assets of the active portfolio, or of every active portfolio in the global view. */
+  data: { stocks: Stock[]; transactions: Transaction[]; prices: Record<string, StockPrice>; tabs: Tab[] };
+  /** Given only in the global view: rows are then grouped and filtered by portfolio. */
+  portfolios?: Portfolio[];
   mode: ConsolidationMode;
   onModeChange: (mode: ConsolidationMode) => void;
-  onOpenAsset: (ticker: string, tabId: number | null) => void;
+  onOpenAsset: (ticker: string, tabId: number | null, portfolioId: number | null) => void;
 }) {
-  const { stocks, transactions, prices, tabs } = portfolio;
+  const { stocks, transactions, prices, tabs } = data;
+  const isGlobal = portfolios !== undefined;
 
   // View choices, remembered in this browser only.
   const [tabFilter, setTabFilter] = useState<TabFilterKey[]>(() => {
     const saved = readStored<unknown>(TAB_FILTER_KEY, []);
     return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === "string") : [];
   });
+  const [portfolioFilter, setPortfolioFilter] = useState<TabFilterKey[]>(() => {
+    const saved = readStored<unknown>(PORTFOLIO_FILTER_KEY, []);
+    return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === "string") : [];
+  });
   const [currency, setCurrency] = useState<Currency>(() => (readStored<string>(CURRENCY_KEY, "USD") === "BRL" ? "BRL" : "USD"));
-  const [allocBy, setAllocBy] = useState<"tab" | "asset">(() => (readStored<string>(ALLOC_KEY, "tab") === "asset" ? "asset" : "tab"));
+  const [allocChoice, setAllocBy] = useState<AllocBy>(() => {
+    const saved = readStored<string>(ALLOC_KEY, "tab");
+    return saved === "asset" || saved === "portfolio" ? saved : "tab";
+  });
+  const allocBy: AllocBy = allocChoice === "portfolio" && !isGlobal ? "tab" : allocChoice;
   const [fx, setFx] = useState<FxState>({ status: "idle" });
 
   useEffect(() => writeStored(TAB_FILTER_KEY, tabFilter), [tabFilter]);
+  useEffect(() => writeStored(PORTFOLIO_FILTER_KEY, portfolioFilter), [portfolioFilter]);
   useEffect(() => writeStored(CURRENCY_KEY, currency), [currency]);
-  useEffect(() => writeStored(ALLOC_KEY, allocBy), [allocBy]);
+  useEffect(() => writeStored(ALLOC_KEY, allocChoice), [allocChoice]);
 
   // Exchange rate only when reais are asked for; refreshed every 10 minutes while open.
   useEffect(() => {
@@ -92,42 +108,28 @@ export function ConsolidatedDashboard({
   const money = (v: number) => formatCurrency(v * k, shownCurrency);
   const price = (v: number | string) => formatPrice(Number(v) * k, shownCurrency);
 
-  const rows: PortfolioItem[] = useMemo(
-    () =>
-      stocks.map((s) => {
-        const currentPrice = prices[s.ticker]?.price || 0;
-        const p = calculatePosition(
-          transactions.filter((t) => t.ticker === s.ticker),
-          currentPrice
-        );
-        return {
-          ticker: s.ticker,
-          name: s.name,
-          tabId: s.tab_id ?? null,
-          quantity: p.quantity,
-          shares: p.shares,
-          avgCost: p.avgCost,
-          totalInvested: p.openCost,
-          currentPrice,
-          marketValue: p.marketValue,
-          unrealizedPnL: p.unrealizedPnL,
-          realizedPnL: p.realizedPnL,
-          totalPnL: p.totalPnL,
-          totalPnLPct: p.totalPnLPct,
-        };
-      }),
-    [stocks, transactions, prices]
-  );
+  const rows: PortfolioItem[] = useMemo(() => buildRows(stocks, transactions, prices), [stocks, transactions, prices]);
 
-  // Tab filter: keys of tabs that have assets, plus "Sem aba" when needed.
-  const tabKeyOf = (tabId: number | null) => (tabId !== null && tabs.some((t) => t.id === tabId) ? String(tabId) : NO_TAB_KEY);
-  const hasOrphans = rows.some((r) => tabKeyOf(r.tabId) === NO_TAB_KEY);
-  const allKeys = [
-    ...tabs.filter((t) => rows.some((r) => r.tabId === t.id)).map((t) => String(t.id)),
-    ...(hasOrphans ? [NO_TAB_KEY] : []),
-  ];
-  const activeFilter = tabFilter.filter((key) => allKeys.includes(key));
-  const shownRows = rows.filter((r) => passesTabFilter(activeFilter, tabKeyOf(r.tabId)));
+  const tabById = new Map(tabs.map((t) => [t.id, t]));
+  const tabKeyOf = (r: PortfolioItem) => {
+    const tab = r.tabId !== null ? tabById.get(r.tabId) : undefined;
+    // a tab only counts when it belongs to the row's portfolio
+    return tab && (!isGlobal || tab.portfolioId === r.portfolioId) ? String(tab.id) : NO_TAB_KEY;
+  };
+
+  // Filter chips: by tab in one portfolio, by portfolio in the global view.
+  const hasOrphans = rows.some((r) => tabKeyOf(r) === NO_TAB_KEY);
+  const chipOptions: Array<{ key: TabFilterKey; label: string; color: string }> = isGlobal
+    ? portfolios.filter((p) => rows.some((r) => r.portfolioId === p.id)).map((p) => ({ key: String(p.id), label: p.name, color: p.color }))
+    : [
+        ...tabs.filter((t) => rows.some((r) => r.tabId === t.id)).map((t) => ({ key: String(t.id), label: t.name, color: t.color })),
+        ...(hasOrphans ? [{ key: NO_TAB_KEY, label: "Sem aba", color: NO_TAB_COLOR }] : []),
+      ];
+  const allKeys = chipOptions.map((c) => c.key);
+  const filter = isGlobal ? portfolioFilter : tabFilter;
+  const setFilter = isGlobal ? setPortfolioFilter : setTabFilter;
+  const activeFilter = filter.filter((key) => allKeys.includes(key));
+  const shownRows = rows.filter((r) => passesTabFilter(activeFilter, isGlobal ? String(r.portfolioId) : tabKeyOf(r)));
 
   const totals = shownRows.reduce(
     (acc, it) => ({
@@ -141,28 +143,54 @@ export function ConsolidatedDashboard({
   );
   const totalPct = totals.invested > 0 ? (totals.total / totals.invested) * 100 : 0;
 
-  // One section per tab, in the user's tab order; assets without a tab go last.
-  const byTab = tabs
-    .map((tab) => ({ tab, items: shownRows.filter((r) => r.tabId === tab.id) }))
-    .filter((sec) => sec.items.length > 0);
-  const orphans = shownRows.filter((r) => tabKeyOf(r.tabId) === NO_TAB_KEY);
-  const sections: Array<{ tab: (typeof tabs)[number] | null; items: PortfolioItem[] }> = orphans.length
-    ? [...byTab, { tab: null, items: orphans }]
-    : byTab;
+  // Table sections: one per tab (one portfolio) or one per portfolio (global), in the user's order.
+  type Section = { key: string; label: string; color: string; items: PortfolioItem[] };
+  const tabOrder = (r: PortfolioItem) => (r.tabId !== null ? tabById.get(r.tabId)?.sortOrder ?? 999 : 999);
+  const sections: Section[] = isGlobal
+    ? portfolios
+        .map((p) => ({
+          key: `p${p.id}`,
+          label: p.name,
+          color: p.color,
+          items: shownRows.filter((r) => r.portfolioId === p.id).sort((a, b) => tabOrder(a) - tabOrder(b) || a.ticker.localeCompare(b.ticker)),
+        }))
+        .filter((sec) => sec.items.length > 0)
+    : [
+        ...tabs.map((tab) => ({ key: `t${tab.id}`, label: tab.name, color: tab.color, items: shownRows.filter((r) => tabKeyOf(r) === String(tab.id)) })),
+        { key: "sem-aba", label: "Sem aba", color: NO_TAB_COLOR, items: shownRows.filter((r) => tabKeyOf(r) === NO_TAB_KEY) },
+      ].filter((sec) => sec.items.length > 0);
 
   // Allocation by market value (open positions only).
+  const portfolioName = (id: number | null) => portfolios?.find((p) => p.id === id)?.name ?? "";
+  const sumBy = (keyOf: (r: PortfolioItem) => string, labelOf: (r: PortfolioItem) => string, colorOf?: (r: PortfolioItem) => string) => {
+    const acc = new Map<string, { key: string; label: string; value: number; color?: string }>();
+    for (const r of shownRows) {
+      const k = keyOf(r);
+      const cur = acc.get(k) ?? { key: k, label: labelOf(r), value: 0, color: colorOf?.(r) };
+      cur.value += r.marketValue;
+      acc.set(k, cur);
+    }
+    return allocationSlices([...acc.values()]);
+  };
   const slices =
-    allocBy === "tab"
-      ? allocationSlices(
-          sections.map(({ tab, items }) => ({
-            key: String(tab?.id ?? NO_TAB_KEY),
-            label: tab?.name ?? "Sem aba",
-            value: items.reduce((sum, it) => sum + it.marketValue, 0),
-            color: tab?.color ?? NO_TAB_COLOR,
-          }))
-        )
-      : allocationSlices(shownRows.map((r) => ({ key: r.ticker, label: displaySymbol(r.ticker), value: r.marketValue })));
+    allocBy === "portfolio"
+      ? allocationSlices(sections.map((sec) => ({ key: sec.key, label: sec.label, color: sec.color, value: sec.items.reduce((sum, it) => sum + it.marketValue, 0) })))
+      : allocBy === "tab"
+        ? sumBy(
+            (r) => `${r.portfolioId ?? 0}:${tabKeyOf(r)}`,
+            (r) => {
+              const tabName = tabKeyOf(r) === NO_TAB_KEY ? "Sem aba" : tabById.get(r.tabId!)!.name;
+              return isGlobal ? `${portfolioName(r.portfolioId)} · ${tabName}` : tabName;
+            },
+            (r) => (tabKeyOf(r) === NO_TAB_KEY ? NO_TAB_COLOR : tabById.get(r.tabId!)!.color)
+          )
+        : // the same asset in two portfolios counts once, summed
+          sumBy((r) => r.ticker, (r) => displaySymbol(r.ticker));
   const sliceColor = (i: number, color?: string) => color ?? ASSET_COLORS[i % ASSET_COLORS.length];
+  const allocOptions: Array<[AllocBy, string]> = isGlobal
+    ? [["portfolio", "Por carteira"], ["tab", "Por aba"], ["asset", "Por ativo"]]
+    : [["tab", "Por aba"], ["asset", "Por ativo"]];
+  const allocLabel = allocBy === "portfolio" ? "por carteira" : allocBy === "tab" ? "por aba" : "por ativo";
 
   const segmented = <T extends string>(
     label: string,
@@ -192,7 +220,7 @@ export function ConsolidatedDashboard({
         key={key ?? "all"}
         type="button"
         aria-pressed={active}
-        onClick={() => setTabFilter(key === null ? [] : toggleTabFilter(activeFilter, key, allKeys))}
+        onClick={() => setFilter(key === null ? [] : toggleTabFilter(activeFilter, key, allKeys))}
         className={cn(
           "flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition-all",
           active ? "border-tv-accent/60 bg-tv-accent/15 text-tv-text" : "border-white/10 text-tv-text/60 hover:bg-white/5"
@@ -242,10 +270,9 @@ export function ConsolidatedDashboard({
     <div className="space-y-6">
       {/* Filter by tab and display currency. */}
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar por aba">
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label={isGlobal ? "Filtrar por carteira" : "Filtrar por aba"}>
           {filterChip(null, "Todas")}
-          {tabs.filter((t) => allKeys.includes(String(t.id))).map((t) => filterChip(String(t.id), t.name, t.color))}
-          {hasOrphans && filterChip(NO_TAB_KEY, "Sem aba", NO_TAB_COLOR)}
+          {chipOptions.map((c) => filterChip(c.key, c.label, c.color))}
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
@@ -306,12 +333,12 @@ export function ConsolidatedDashboard({
       {slices.length > 0 && (
         <Card
           title="Alocação"
-          extra={segmented<"tab" | "asset">("Alocação por", allocBy, [["tab", "Por aba"], ["asset", "Por ativo"]], setAllocBy)}
+          extra={segmented<AllocBy>("Alocação por", allocBy, allocOptions, setAllocBy)}
         >
           <div className="flex flex-col sm:flex-row items-center gap-6">
             <Donut
               slices={slices.map((s, i) => ({ key: s.key, label: s.label, pct: s.pct, color: sliceColor(i, s.color) }))}
-              ariaLabel={`Alocação ${allocBy === "tab" ? "por aba" : "por ativo"}: ${slices
+              ariaLabel={`Alocação ${allocLabel}: ${slices
                 .map((s) => `${s.label} ${s.pct.toFixed(1)}%`)
                 .join(", ")}`}
               center={
@@ -335,7 +362,7 @@ export function ConsolidatedDashboard({
         </Card>
       )}
 
-      <Card title="Consolidado da Carteira">
+      <Card title={isGlobal ? "Visão Global" : "Consolidado da Carteira"}>
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
@@ -357,17 +384,17 @@ export function ConsolidatedDashboard({
             </thead>
 
             <tbody className="text-sm font-mono">
-              {sections.map(({ tab, items }) => {
+              {sections.map(({ key: sectionKey, label, color, items }) => {
                 const market = items.reduce((sum, it) => sum + it.marketValue, 0);
                 const pnl = items.reduce((sum, it) => sum + it.totalPnL, 0);
                 return (
-                  <React.Fragment key={tab?.id ?? "sem-aba"}>
+                  <React.Fragment key={sectionKey}>
                     <tr className="bg-white/[0.03]">
                       <td colSpan={mode === "SEPARATED" ? 9 : 7} className="py-2 pl-2 pr-2 font-sans">
                         <div className="flex items-center justify-between gap-3 text-xs">
                           <span className="flex items-center gap-2 font-semibold uppercase tracking-wider text-tv-text/70">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: tab?.color ?? NO_TAB_COLOR }} />
-                            {tab?.name ?? "Sem aba"}
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+                            {label}
                           </span>
                           <span className="font-mono text-tv-text/60">
                             {money(market)} · <span className={pnl >= 0 ? "text-tv-up" : "text-tv-down"}>{money(pnl)}</span>
@@ -377,13 +404,13 @@ export function ConsolidatedDashboard({
                     </tr>
                     {items.map((it) => (
                       <tr
-                        key={it.ticker}
+                        key={it.key}
                         tabIndex={0}
                         role="link"
-                        aria-label={`Abrir ${displaySymbol(it.ticker)} na aba ${tab?.name ?? ""}`}
+                        aria-label={`Abrir ${displaySymbol(it.ticker)} em ${label}`}
                         title={`Abrir ${displaySymbol(it.ticker)}`}
-                        onClick={() => onOpenAsset(it.ticker, it.tabId)}
-                        onKeyDown={(e) => e.key === "Enter" && onOpenAsset(it.ticker, it.tabId)}
+                        onClick={() => onOpenAsset(it.ticker, it.tabId, it.portfolioId)}
+                        onKeyDown={(e) => e.key === "Enter" && onOpenAsset(it.ticker, it.tabId, it.portfolioId)}
                         className="group border-b border-tv-border/50 hover:bg-white/5 cursor-pointer transition-colors focus:outline-none focus:bg-white/5 focus:ring-2 focus:ring-inset focus:ring-tv-accent/40"
                       >
                         <td className="py-4 pl-2 font-bold">
@@ -394,7 +421,10 @@ export function ConsolidatedDashboard({
                               className="text-tv-accent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity"
                             />
                           </div>
-                          <div className="text-[10px] text-tv-text/40 font-normal">{it.name}</div>
+                          <div className="text-[10px] text-tv-text/40 font-normal">
+                            {it.name}
+                            {isGlobal && tabKeyOf(it) !== NO_TAB_KEY && <> · {tabById.get(it.tabId!)!.name}</>}
+                          </div>
                         </td>
                         <td className="py-4">{price(it.currentPrice)}</td>
                         <td className="py-4 text-tv-text/60">{price(it.avgCost)}</td>
