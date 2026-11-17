@@ -1,14 +1,15 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { CurrencyCode } from "../../shared/currencies";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export type Currency = "USD" | "BRL";
+export type Currency = CurrencyCode;
 
-/** Dollars in the app's US format ($1,234.56); reais in the Brazilian format (R$ 1.234,56). */
-const LOCALE: Record<Currency, string> = { USD: "en-US", BRL: "pt-BR" };
+/** Dollars in the app's US format ($1,234.56); reais, euros and francs in the Brazilian format (R$ 1.234,56; € 1.234,56). */
+const LOCALE: Record<Currency, string> = { USD: "en-US", BRL: "pt-BR", EUR: "pt-BR", CHF: "pt-BR" };
 
 export function formatCurrency(value: number, currency: Currency = "USD") {
   return new Intl.NumberFormat(LOCALE[currency], {

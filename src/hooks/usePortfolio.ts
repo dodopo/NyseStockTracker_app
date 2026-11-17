@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { portfolioApi, tabsApi } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
-import type { Stock, Tab, Transaction } from "../types";
+import type { ClassificationChanges, Stock, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
 import { confirmDestructive } from "../lib/confirm";
 
@@ -158,7 +158,23 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     return true;
   }, [reloadTabs]);
 
-  const addTransaction = useCallback(async (tx: Omit<Transaction, "id" | "sort_order">) => {
+  const classifyStock = useCallback(async (ticker: string, changes: ClassificationChanges) => {
+    const pid = pinned();
+    const updated = await portfolioApi.classifyStock(pid, ticker, changes);
+    if (still(pid)) setStocks((cur) => cur.map((s) => (s.ticker === ticker ? { ...s, ...updated } : s)));
+  }, []);
+
+  /** Overwrites the classification of every asset of the tab: asks first (see lib/confirm.ts). */
+  const classifyTab = useCallback(async (tabId: number, changes: ClassificationChanges, question: string) => {
+    if (!confirmDestructive(question)) return false;
+    const pid = pinned();
+    await tabsApi.classify(pid, tabId, changes);
+    const next = await portfolioApi.stocks(pid);
+    if (still(pid)) setStocks(next);
+    return true;
+  }, []);
+
+  const addTransaction = useCallback(async (tx: Omit<Transaction, "id" | "sort_order" | "fx">) => {
     const pid = pinned();
     await portfolioApi.addTransaction(pid, tx);
     const next = await portfolioApi.transactions(pid);
@@ -192,6 +208,8 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     deleteTab,
     addTransaction,
     deleteTransaction,
+    classifyStock,
+    classifyTab,
   };
 }
 

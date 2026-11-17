@@ -270,7 +270,10 @@ sudo /usr/local/sbin/dodopoam-update vA.B.C
 Voltar da v0.5.x para a v0.4.x **não exige restaurar o banco**: a migração da v0.5.0 só
 acrescenta colunas e continua preenchendo as antigas. **A v0.13.0 muda a estrutura do banco
 (carteiras): voltar dela para a v0.12.x exige restaurar o backup tirado antes da atualização**
-(o que for salvo na v0.13.0 depois disso se perde). Para essas versões, faça o rollback manual com
+(o que for salvo na v0.13.0 depois disso se perde). A v0.14.0 só acrescenta colunas (classificação,
+moeda e PTAX): a v0.13.x ainda funciona sobre o banco migrado, mas o que for gravado nela fica com os
+valores padrão (moeda do ativo, PTAX buscada de novo quando a v0.14.0 voltar); o caminho mais seguro
+continua sendo restaurar o backup. Para essas versões, faça o rollback manual com
 o backup tirado **antes** da atualização:
 
 1. Pare o app:

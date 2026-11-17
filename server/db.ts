@@ -334,6 +334,40 @@ const MIGRATIONS: Migration[] = [
       for (const [table, value] of Object.entries(seq)) keepSeq.run(value, table);
     },
   },
+  {
+    // v8 = v0.14.0 classifications and currencies. Only ADDS columns (no rebuild):
+    // an older version still reads and writes these tables (new columns get
+    // their defaults; trades without PTAX are filled in later).
+    // Allowed values are written out here on purpose: a migration never changes,
+    // even if shared/classification.ts or shared/currencies.ts grow later.
+    version: 8,
+    up: (db) => {
+      const currencies = `('BRL', 'USD', 'EUR', 'CHF')`;
+      db.exec(`
+        ALTER TABLE stocks ADD COLUMN liquidity TEXT NOT NULL DEFAULT 'liquid'
+          CHECK (liquidity IN ('liquid', 'illiquid'));
+        ALTER TABLE stocks ADD COLUMN horizon TEXT
+          CHECK (horizon IS NULL OR horizon IN ('ultra_short', 'short', 'medium', 'long', 'ultra_long'));
+        ALTER TABLE stocks ADD COLUMN jurisdiction TEXT
+          CHECK (jurisdiction IS NULL OR jurisdiction IN ('onshore', 'offshore'));
+        ALTER TABLE stocks ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency IN ${currencies});
+        -- by ticker too: a very old database may still have crypto marked us_stock here
+        -- (opening the database fixes asset_type only after the migrations)
+        UPDATE stocks SET jurisdiction = 'offshore' WHERE asset_type = 'us_stock' AND ticker NOT LIKE 'X:%';
+
+        ALTER TABLE transactions ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency IN ${currencies});
+        ALTER TABLE transactions ADD COLUMN fx TEXT;
+
+        -- Final PTAX per trade date (never changes once final): saves asking the
+        -- Banco Central again. Not user data; may be emptied at any time.
+        CREATE TABLE ptax_cache (
+          trade_date TEXT PRIMARY KEY,
+          snapshot TEXT NOT NULL,
+          fetched_at TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 export const DEFAULT_TAB = { name: "Ações", assetType: "us_stock", color: "#2962ff" } as const;

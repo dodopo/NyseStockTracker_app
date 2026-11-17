@@ -63,7 +63,7 @@ describe("migração v7: carteiras", () => {
     migrate(db);
 
     expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(7);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(7);
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");

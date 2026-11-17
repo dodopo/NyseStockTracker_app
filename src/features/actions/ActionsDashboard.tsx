@@ -10,6 +10,10 @@ import type { PortfolioState } from "../../hooks/usePortfolio";
 import type { Stock, Tab, TransactionType } from "../../types";
 import { ASSET_TYPES, displaySymbol, type AssetType } from "../../../shared/assetTypes";
 import { calculatePosition } from "../../../shared/positions";
+import { convertTrades } from "../../../shared/fxPositions";
+import { CURRENCIES, CURRENCY_LABEL, isCurrency, type CurrencyCode } from "../../../shared/currencies";
+import { ClassificationCard } from "./ClassificationCard";
+import { useLiveFx } from "../../hooks/useLiveFx";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
 import { compareTransactions } from "../../../shared/validation";
 // The chart library is large: load it only when an asset is opened.
@@ -51,6 +55,7 @@ export function ActionsDashboard({
           <StockDetail
             key={currentStock.ticker}
             stock={currentStock}
+            tab={tab}
             portfolio={portfolio}
             price={prices[currentStock.ticker]}
             transactions={transactions.filter((t) => t.ticker === currentStock.ticker)}
@@ -252,25 +257,36 @@ function assetTypeOf(stock: Stock): AssetType {
 
 function StockDetail({
   stock,
+  tab,
   portfolio,
   price,
   transactions,
   onOpenSettings,
 }: {
   stock: Stock;
+  tab: Tab;
   portfolio: PortfolioState;
   price: PortfolioState["prices"][string] | undefined;
   transactions: PortfolioState["transactions"];
   onOpenSettings: () => void;
 }) {
   const currentPrice = price?.price || 0;
-  const position = useMemo(() => calculatePosition(transactions, currentPrice), [transactions, currentPrice]);
+  // Everything here is in the asset's own currency; a trade paid in another
+  // currency enters at the PTAX frozen on it.
+  const assetCurrency: CurrencyCode = isCurrency(stock.currency) ? stock.currency : "USD";
+  // Today's rate only as a stand-in for a trade in another currency whose PTAX is not known yet.
+  const needsLive = transactions.some((t) => !t.fx && isCurrency(t.currency) && t.currency !== assetCurrency);
+  const fx = useLiveFx(needsLive);
+  const live = needsLive && fx.status === "ready" ? fx.rates : null;
+  const native = useMemo(() => convertTrades(transactions, assetCurrency, assetCurrency, live), [transactions, assetCurrency, live]);
+  const position = useMemo(() => calculatePosition(native.trades, currentPrice), [native, currentPrice]);
+  const tradeCurrency = (t: { currency?: string }) => (isCurrency(t.currency) ? t.currency : assetCurrency);
   const history = useMemo(() => [...transactions].sort(compareTransactions).reverse(), [transactions]);
 
   const removeTransaction = async (t: (typeof transactions)[number]) => {
     if (!t.id) return;
     const kind = t.type === "BUY" ? "COMPRA" : "VENDA";
-    const question = `Excluir a ${kind} de ${displaySymbol(stock.ticker)} de ${t.date}: ${formatQuantity(t.shares)} un @ ${formatPrice(t.price)}?`;
+    const question = `Excluir a ${kind} de ${displaySymbol(stock.ticker)} de ${t.date}: ${formatQuantity(t.shares)} un @ ${formatPrice(t.price, tradeCurrency(t))}?`;
     try {
       await portfolio.deleteTransaction(t.id, question);
     } catch (err) {
@@ -286,7 +302,7 @@ function StockDetail({
           <p className="text-tv-text/60">{stock.name}</p>
         </div>
         <div className="text-right">
-          <div className="text-2xl font-mono">{formatPrice(currentPrice)}</div>
+          <div className="text-2xl font-mono">{formatPrice(currentPrice, assetCurrency)}</div>
           <div
             className={cn(
               "text-sm font-medium flex items-center justify-end gap-1",
@@ -307,7 +323,7 @@ function StockDetail({
         <PriceChart
           symbol={stock.ticker}
           assetType={assetTypeOf(stock)}
-          transactions={transactions}
+          transactions={native.trades}
           avgCost={position.avgCost}
           hasPosition={position.shares > 0}
           livePrice={currentPrice}
@@ -322,23 +338,38 @@ function StockDetail({
           <div className="text-2xl font-bold font-mono">{formatQuantity(position.quantity)}</div>
         </Card>
         <Card title="Preço Médio (PM)">
-          <div className="text-2xl font-bold font-mono">{formatPrice(position.avgCost)}</div>
+          <div className="text-2xl font-bold font-mono">{formatPrice(position.avgCost, assetCurrency)}</div>
         </Card>
         <Card title="Investido (Aberto)">
-          <div className="text-2xl font-bold font-mono">{formatCurrency(position.openCost)}</div>
+          <div className="text-2xl font-bold font-mono">{formatCurrency(position.openCost, assetCurrency)}</div>
         </Card>
         <Card title="P/L Não Realizado">
           <div className={cn("text-2xl font-bold font-mono", position.unrealizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
-            {formatCurrency(position.unrealizedPnL)}
+            {formatCurrency(position.unrealizedPnL, assetCurrency)}
           </div>
           <div className="text-xs text-tv-text/40">{position.unrealizedPnLPct.toFixed(2)}%</div>
         </Card>
       </div>
 
+      {native.approx > 0 && (
+        <p className="text-xs text-amber-400">
+          {native.approx === 1 ? "1 operação paga em outra moeda ainda não tem" : `${native.approx} operações pagas em outra moeda ainda não têm`} PTAX
+          do Banco Central: convertida(s) pelo câmbio de hoje, aproximado. O app busca a PTAX a cada 30 minutos.
+        </p>
+      )}
+      {native.missing > 0 && (
+        <p className="text-xs text-tv-down">
+          {native.missing === 1 ? "1 operação paga em outra moeda ficou" : `${native.missing} operações pagas em outra moeda ficaram`} FORA do preço
+          médio e da posição: ainda sem PTAX e sem câmbio de hoje para converter. O app tenta de novo a cada 30 minutos.
+        </p>
+      )}
+
       <StatsCard symbol={stock.ticker} currentPrice={currentPrice} assetType={assetTypeOf(stock)} />
 
+      <ClassificationCard stock={stock} tab={tab} portfolio={portfolio} />
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <TransactionForm ticker={stock.ticker} portfolio={portfolio} />
+        <TransactionForm ticker={stock.ticker} assetCurrency={assetCurrency} portfolio={portfolio} />
 
         <Card title="Histórico de Transações">
           <ul className="space-y-3 max-h-[340px] overflow-y-auto pr-2">
@@ -352,8 +383,9 @@ function StockDetail({
                     {t.type === "BUY" ? "COMPRA" : "VENDA"}
                   </div>
                   <div className="text-sm font-mono">
-                    {formatQuantity(t.shares)} un @ {formatPrice(t.price)}
+                    {formatQuantity(t.shares)} un @ {formatPrice(t.price, tradeCurrency(t))}
                   </div>
+                  <PtaxLine fx={t.fx} />
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-tv-text/40">{t.date}</div>
@@ -377,8 +409,27 @@ function StockDetail({
   );
 }
 
-function TransactionForm({ ticker, portfolio }: { ticker: string; portfolio: PortfolioState }) {
+/** The PTAX frozen on a trade (US$ 1 = R$ x, sell), or why there is none yet. */
+function PtaxLine({ fx }: { fx: PortfolioState["transactions"][number]["fx"] }) {
+  if (fx === undefined) return null;
+  if (fx === null) return <div className="text-[10px] text-amber-400">PTAX pendente (Banco Central)</div>;
+  const [y, m, d] = fx.date.split("-");
+  const usd = Number(fx.sell.USD).toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  return (
+    <div
+      className="text-[10px] text-tv-text/40"
+      title={`PTAX de fechamento (venda) de ${d}/${m}/${y}: US$ ${fx.sell.USD} · € ${fx.sell.EUR} · CHF ${fx.sell.CHF} em reais`}
+    >
+      PTAX {d}/{m}/{y}: US$ 1 = R$ {usd}
+      {fx.provisional && <span className="text-amber-400"> (provisória)</span>}
+    </div>
+  );
+}
+
+function TransactionForm({ ticker, assetCurrency, portfolio }: { ticker: string; assetCurrency: CurrencyCode; portfolio: PortfolioState }) {
   const [type, setType] = useState<TransactionType>("BUY");
+  const [currency, setCurrency] = useState<CurrencyCode>(assetCurrency);
+  const currencyId = useId();
   const [shares, setShares] = useState("");
   const [price, setPrice] = useState("");
   const [date, setDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
@@ -392,7 +443,7 @@ function TransactionForm({ ticker, portfolio }: { ticker: string; portfolio: Por
     e.preventDefault();
     setError(null);
 
-    const check = transactionSchema.safeParse({ ticker, type, shares, price, date });
+    const check = transactionSchema.safeParse({ ticker, type, shares, price, date, currency });
     if (!check.success) {
       setError(firstIssue(check.error));
       return;
@@ -446,7 +497,7 @@ function TransactionForm({ ticker, portfolio }: { ticker: string; portfolio: Por
             />
           </div>
           <div className="space-y-1">
-            <FieldLabel htmlFor={priceId}>Preço ($)</FieldLabel>
+            <FieldLabel htmlFor={priceId}>Preço ({currency})</FieldLabel>
             <input
               id={priceId}
               type="text"
@@ -460,17 +511,32 @@ function TransactionForm({ ticker, portfolio }: { ticker: string; portfolio: Por
           </div>
         </div>
 
-        <div className="space-y-1">
-          <FieldLabel htmlFor={dateId}>Data</FieldLabel>
-          <input
-            id={dateId}
-            type="date"
-            className="tv-input w-full"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            required
-          />
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <FieldLabel htmlFor={dateId}>Data</FieldLabel>
+            <input
+              id={dateId}
+              type="date"
+              className="tv-input w-full"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1">
+            <FieldLabel htmlFor={currencyId}>Moeda paga</FieldLabel>
+            <select id={currencyId} className="tv-input w-full" value={currency} onChange={(e) => setCurrency(e.target.value as CurrencyCode)}>
+              {CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {CURRENCY_LABEL[c]}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+        <p className="text-[10px] text-tv-text/40">
+          A PTAX (Banco Central) da data fica gravada na operação, para converter o custo em qualquer moeda.
+        </p>
 
         <button type="submit" disabled={saving} className="tv-btn w-full flex items-center justify-center gap-2">
           {saving ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />} Registrar

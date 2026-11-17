@@ -7,11 +7,15 @@ import type { z } from "zod";
 import type { AppConfig } from "./config";
 import { CandleError, createCandleService, defaultMassiveFetch, providerUrls, type AlpacaKeys, type MassiveFetch } from "./candles";
 import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
-import { coinbaseUsdAssets, coinbaseUsdBrl, type CryptoAsset } from "./providers/coinbase";
+import { coinbaseUsdAssets, coinbaseLiveRates, type CryptoAsset } from "./providers/coinbase";
+import { STOCK_COLUMNS, TX_COLUMNS, txListOut } from "./columns";
+import { createPtax } from "./ptax";
+import { isCurrency, parseFxSnapshot, quoteCurrencyOf, type CurrencyCode, type FxSnapshot } from "../shared/currencies";
+import { defaultClassification, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Classification } from "../shared/classification";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_PORTFOLIO, type DB } from "./db";
-import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE } from "../shared/assetTypes";
+import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE, type AssetType } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
 import { APP_NAME } from "../shared/brand";
 import { HttpError, nowIso, parseBody, wrap } from "./http";
@@ -32,6 +36,7 @@ import {
   tabReorderSchema,
   tabUpdateSchema,
   transactionSchema,
+  classificationSchema,
 } from "../shared/schemas";
 import {
   LIMITS,
@@ -44,6 +49,11 @@ import {
   shortText,
   type PositionTx,
 } from "../shared/validation";
+
+/** YYYY-MM-DD plus (or minus) whole days. */
+function addIsoDays(iso: string, days: number) {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
 
 export const SESSION_COOKIE_NAME = "nyse_tracker_session";
 const BCRYPT_COST = 12;
@@ -64,10 +74,8 @@ type UserRow = {
   last_login_at: string | null;
 };
 
-type TxRow = PositionTx & { id: number; price: string };
+type TxRow = PositionTx & { id: number; price: string; fx?: unknown };
 
-// Canonical decimal strings come from the *_dec columns (exact); REAL columns are legacy.
-const TX_COLUMNS = `id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order`;
 
 async function defaultFinnhubFetch(url: string) {
   const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
@@ -118,7 +126,14 @@ function getSafeUser(user: UserRow | undefined) {
 export function createApp(
   db: DB,
   config: AppConfig,
-  deps: { finnhubFetch?: FinnhubFetch; massiveFetch?: MassiveFetch; dataFetch?: DataFetch; now?: () => number } = {}
+  deps: {
+    finnhubFetch?: FinnhubFetch;
+    massiveFetch?: MassiveFetch;
+    dataFetch?: DataFetch;
+    now?: () => number;
+    /** Fill pending PTAX every 30 min (default: on, except in tests). */
+    ptaxBackground?: boolean;
+  } = {}
 ) {
   const finnhubFetch = deps.finnhubFetch ?? defaultFinnhubFetch;
   const massiveFetch = deps.massiveFetch ?? defaultMassiveFetch;
@@ -132,11 +147,12 @@ export function createApp(
   // ---------------------------------------------------------------------------
   const q = {
     getStocks: db.prepare(
-      `SELECT id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? AND portfolio_id = ? ORDER BY ticker ASC`
+      `SELECT ${STOCK_COLUMNS} FROM stocks WHERE user_id = ? AND portfolio_id = ? ORDER BY ticker ASC`
     ),
-    getStock: db.prepare(`SELECT id FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
+    getStock: db.prepare(`SELECT id, currency FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
     insertStock: db.prepare(
-      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
 
     getTabs: db.prepare(
@@ -169,8 +185,8 @@ export function createApp(
     ),
     getTxById: db.prepare(`SELECT id, ticker FROM transactions WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
     insertTx: db.prepare(
-      `INSERT INTO transactions (user_id, portfolio_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO transactions (user_id, portfolio_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order, currency, fx)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     deleteUser: db.prepare(`DELETE FROM users WHERE id = ?`),
     // Account-wide totals: never more than a backup of this account can restore.
@@ -184,10 +200,10 @@ export function createApp(
       `SELECT id, portfolio_id, name, asset_type, color, sort_order FROM tabs WHERE user_id = ? ORDER BY portfolio_id, sort_order, id`
     ),
     exportStocks: db.prepare(
-      `SELECT id, portfolio_id, ticker, name, created_at, asset_type, tab_id FROM stocks WHERE user_id = ? ORDER BY portfolio_id, ticker`
+      `SELECT ${STOCK_COLUMNS}, portfolio_id FROM stocks WHERE user_id = ? ORDER BY portfolio_id, ticker`
     ),
     exportTx: db.prepare(
-      `SELECT id, portfolio_id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order
+      `SELECT ${TX_COLUMNS}, portfolio_id
        FROM transactions WHERE user_id = ? ORDER BY portfolio_id, date DESC, sort_order DESC, id DESC`
     ),
     deleteAllPortfolios: db.prepare(`DELETE FROM portfolios WHERE user_id = ?`),
@@ -251,7 +267,9 @@ export function createApp(
     portfolioId: number,
     tx: { ticker: string; type: "BUY" | "SELL"; shares: string; price: string; date: string },
     createdAt: string,
-    sortOrder: number
+    sortOrder: number,
+    currency: CurrencyCode,
+    fx: FxSnapshot | null
   ) {
     return q.insertTx.run(
       userId,
@@ -264,8 +282,61 @@ export function createApp(
       tx.price,
       tx.date,
       createdAt,
-      sortOrder
+      sortOrder,
+      currency,
+      fx ? JSON.stringify(fx) : null
     );
+  }
+
+  /** Inserts an asset with its classification and quote currency. */
+  function insertStock(
+    userId: number,
+    portfolioId: number,
+    s: { ticker: string; name: string; createdAt: string; assetType: AssetType; tabId: number | null; classification: Classification }
+  ) {
+    const c = s.classification;
+    return q.insertStock.run(
+      userId, portfolioId, s.ticker, s.name, s.createdAt, s.assetType, s.tabId,
+      c.liquidity, c.horizon, c.jurisdiction, quoteCurrencyOf(s.assetType)
+    );
+  }
+
+  /** Classification from a backup row: each valid field kept, anything else gets the default of the type. */
+  function classificationFromBackup(row: any, assetType: AssetType): Classification {
+    const d = defaultClassification(assetType);
+    const pick = <T extends string>(key: string, ids: readonly T[], fallback: T | null, nullable: boolean): T | null => {
+      if (!row || !Object.hasOwn(row, key)) return fallback;
+      const v = row[key];
+      if (v === null) return nullable ? null : fallback;
+      return ids.includes(v) ? v : fallback;
+    };
+    return {
+      liquidity: pick("liquidity", LIQUIDITY_IDS, d.liquidity, false) ?? d.liquidity,
+      horizon: pick("horizon", HORIZON_IDS, d.horizon, true),
+      jurisdiction: pick("jurisdiction", JURISDICTION_IDS, d.jurisdiction, true),
+    };
+  }
+
+  // PTAX frozen on each trade (Banco Central). Pending ones are filled in the background.
+  const ptax = createPtax(db, { fetchJson: dataFetch, baseUrl: process.env.BCB_PTAX_URL?.trim() || undefined, now: deps.now });
+  const PTAX_WAIT_MS = 6_000;
+  /** The trade date's PTAX, or null if the BCB does not answer quickly (filled in later). */
+  async function ptaxOrLater(date: string): Promise<FxSnapshot | null> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), PTAX_WAIT_MS);
+    });
+    try {
+      return await Promise.race([ptax.snapshotFor(date).catch(() => null), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (deps.ptaxBackground ?? !(process.env.VITEST || process.env.NODE_ENV === "test")) {
+    const run = () =>
+      void ptax.refreshPending().catch((error: any) => console.error(`[ptax] falha ao preencher PTAX pendente: ${error?.message ?? error}`));
+    setTimeout(run, 5_000).unref();
+    setInterval(run, 30 * 60_000).unref();
   }
 
   // ---------------------------------------------------------------------------
@@ -819,8 +890,53 @@ export function createApp(
       throw new HttpError(400, `Limite de ${LIMITS.importStocksMax} ativos na conta (somando todas as carteiras)`);
     }
 
-    q.insertStock.run(user.id, pf, ticker, name, nowIso(), assetType, tab.id);
-    res.status(201).json({ ticker, name, assetType, tabId: tab.id });
+    const classification = defaultClassification(assetType);
+    insertStock(user.id, pf, { ticker, name, createdAt: nowIso(), assetType, tabId: tab.id, classification });
+    res.status(201).json({ ticker, name, assetType, tabId: tab.id, ...classification, currency: quoteCurrencyOf(assetType) });
+  });
+
+  // Classification of one asset (liquidity, horizon, jurisdiction): only the fields sent change.
+  const classifyStmt = (where: string) =>
+    db.prepare(
+      `UPDATE stocks SET
+         liquidity = CASE WHEN @setLiquidity THEN @liquidity ELSE liquidity END,
+         horizon = CASE WHEN @setHorizon THEN @horizon ELSE horizon END,
+         jurisdiction = CASE WHEN @setJurisdiction THEN @jurisdiction ELSE jurisdiction END
+       WHERE user_id = @userId AND portfolio_id = @portfolioId AND ${where}`
+    );
+  const classifyOne = classifyStmt("ticker = @ticker");
+  const classifyTab = classifyStmt("tab_id = @tabId");
+  const classifyParams = (c: z.infer<typeof classificationSchema>) => ({
+    setLiquidity: c.liquidity !== undefined ? 1 : 0,
+    liquidity: c.liquidity ?? null,
+    setHorizon: c.horizon !== undefined ? 1 : 0,
+    horizon: c.horizon ?? null,
+    setJurisdiction: c.jurisdiction !== undefined ? 1 : 0,
+    jurisdiction: c.jurisdiction ?? null,
+  });
+  const getOneStock = db.prepare(`SELECT ${STOCK_COLUMNS} FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`);
+
+  app.patch("/api/stocks/:ticker/classification", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const ticker = normalizeTicker(req.params.ticker);
+    if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
+    const changes = parseBody(classificationSchema, req.body);
+    const info = classifyOne.run({ ...classifyParams(changes), userId: user.id, portfolioId: pf, ticker });
+    if (info.changes === 0) throw new HttpError(404, "Ativo não encontrado");
+    res.json(getOneStock.get(user.id, pf, ticker));
+  });
+
+  /** Same classification for every asset of a tab ("Aplicar a todos os ativos desta aba"). */
+  app.post("/api/tabs/:id/classification", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const tabId = Number(req.params.id);
+    if (!Number.isSafeInteger(tabId) || tabId <= 0) throw new HttpError(400, "Invalid id");
+    const changes = parseBody(classificationSchema, req.body);
+    if (!q.getTab.get(user.id, pf, tabId)) throw new HttpError(404, "Aba não encontrada");
+    const info = classifyTab.run({ ...classifyParams(changes), userId: user.id, portfolioId: pf, tabId });
+    res.json({ success: true, changed: info.changes });
   });
 
   // ---------------------------------------------------------------------------
@@ -924,25 +1040,40 @@ export function createApp(
     if (req.query.ticker) {
       const ticker = normalizeTicker(req.query.ticker);
       if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
-      return res.json(q.getTxByTicker.all(user.id, pf, ticker));
+      return res.json(txListOut(q.getTxByTicker.all(user.id, pf, ticker) as TxRow[]));
     }
     const order = String(req.query.order ?? "").toLowerCase();
-    res.json(order === "desc" ? q.getTxDesc.all(user.id, pf) : q.getTxAsc.all(user.id, pf));
+    res.json(txListOut((order === "desc" ? q.getTxDesc.all(user.id, pf) : q.getTxAsc.all(user.id, pf)) as TxRow[]));
   });
 
-  app.post("/api/transactions", requireAuth, requirePortfolio, (req, res) => {
+  app.post("/api/transactions", requireAuth, requirePortfolio, wrap(async (req, res) => {
     const user = currentUser(res);
     const pf = currentPortfolio(res);
     const tx = parseBody(transactionSchema, req.body);
     const { ticker, type, shares, date } = tx;
-    if (!q.getStock.get(user.id, pf, ticker)) {
-      throw new HttpError(400, "Ticker not found in portfolio. Add the stock first.");
-    }
-    if ((q.countUserTx.get(user.id) as { n: number }).n >= LIMITS.importTransactionsMax) {
-      throw new HttpError(400, `Limite de ${LIMITS.importTransactionsMax} operações na conta (somando todas as carteiras)`);
-    }
+    const checkAsset = () => {
+      const stock = q.getStock.get(user.id, pf, ticker) as { id: number; currency: string } | undefined;
+      if (!stock) throw new HttpError(400, "Ticker not found in portfolio. Add the stock first.");
+      if ((q.countUserTx.get(user.id) as { n: number }).n >= LIMITS.importTransactionsMax) {
+        throw new HttpError(400, `Limite de ${LIMITS.importTransactionsMax} operações na conta (somando todas as carteiras)`);
+      }
+      return stock;
+    };
+    // Fail fast, before asking the Banco Central (checked again below, atomically).
+    checkAsset();
+    const sellTooBig = () =>
+      type === "SELL" &&
+      findNegativePosition([
+        ...(q.getTxByTicker.all(user.id, pf, ticker) as TxRow[]),
+        { ticker, type, shares, date, sort_order: Number((q.nextSortOrder.get(user.id, pf) as { next: number }).next) },
+      ]);
+    if (sellTooBig()) throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
+    const fx = await ptaxOrLater(date);
 
     const id = db.transaction(() => {
+      // Checked again: the asset may have been deleted while the PTAX was fetched.
+      const stock = checkAsset();
+      const currency: CurrencyCode = tx.currency ?? (isCurrency(stock.currency) ? stock.currency : "USD");
       const nextSortOrder = Number((q.nextSortOrder.get(user.id, pf) as { next: number }).next);
       const existing = q.getTxByTicker.all(user.id, pf, ticker) as TxRow[];
 
@@ -953,11 +1084,11 @@ export function createApp(
         throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
       }
 
-      return insertTransaction(user.id, pf, tx, nowIso(), nextSortOrder).lastInsertRowid;
+      return insertTransaction(user.id, pf, tx, nowIso(), nextSortOrder, currency, fx).lastInsertRowid;
     })();
 
-    res.status(201).json({ success: true, id: Number(id) });
-  });
+    res.status(201).json({ success: true, id: Number(id), fx });
+  }));
 
   app.delete("/api/transactions/:id", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
@@ -1004,7 +1135,7 @@ export function createApp(
       portfolios: q.exportPortfolios.all(user.id),
       tabs: q.exportTabs.all(user.id),
       stocks: q.exportStocks.all(user.id),
-      transactions: q.exportTx.all(user.id),
+      transactions: txListOut(q.exportTx.all(user.id) as TxRow[]),
     });
   });
 
@@ -1139,7 +1270,14 @@ export function createApp(
         const mapped = tabIdMap.get(Number(st?.tab_id));
         // null: default tab below. A tab of another portfolio or type is never used.
         const tabId = mapped && mapped.assetType === assetType && mapped.portfolioId === portfolioId ? mapped.id : null;
-        q.insertStock.run(user.id, portfolioId, ticker, name, shortText(st?.created_at) || nowIso(), assetType, tabId);
+        insertStock(user.id, portfolioId, {
+          ticker,
+          name,
+          createdAt: shortText(st?.created_at) || nowIso(),
+          assetType,
+          tabId,
+          classification: classificationFromBackup(st, assetType),
+        });
         knownAssets.add(`${portfolioId}:${ticker}`);
       }
 
@@ -1157,7 +1295,12 @@ export function createApp(
         const sortRaw = Number(tr?.sort_order);
         const sortOrder = Number.isSafeInteger(sortRaw) && sortRaw > 0 ? sortRaw : fallbackSortOrder;
 
-        const info = insertTransaction(user.id, portfolioId, tx, shortText(tr?.created_at) || nowIso(), sortOrder);
+        // Currency and PTAX of the backup are kept when coherent (rates in range, bulletin
+        // on or up to 15 days before the trade); anything else is fetched again from the BCB.
+        const currency = tx.currency ?? quoteCurrencyOf(assetTypeOfTicker(tx.ticker));
+        const fxIn = parseFxSnapshot(tr?.fx);
+        const fx = fxIn && fxIn.date <= tx.date && fxIn.date >= addIsoDays(tx.date, -15) ? fxIn : null;
+        const info = insertTransaction(user.id, portfolioId, tx, shortText(tr?.created_at) || nowIso(), sortOrder, currency, fx);
         const list = imported.get(portfolioId) ?? [];
         list.push({
           id: Number(info.lastInsertRowid),
@@ -1195,7 +1338,7 @@ export function createApp(
         return {
           tabs: (q.getTabs.all(user.id, first.id) as TabRow[]).map(tabDto),
           stocks: q.getStocks.all(user.id, first.id),
-          transactions: q.getTxDesc.all(user.id, first.id),
+          transactions: txListOut(q.getTxDesc.all(user.id, first.id) as TxRow[]),
         };
       })(),
     });
@@ -1319,26 +1462,49 @@ export function createApp(
     }
   }
 
-  /** USD -> BRL for the consolidated view: Coinbase (no key), cached 10 min; stale value if Coinbase fails. */
-  let usdBrl: { rate: number; fetchedAt: string; expiresAt: number } | null = null;
+  /**
+   * Live exchange rates for the consolidated view (reais per 1 USD, EUR, CHF):
+   * Coinbase (no key), cached 10 min; the last good value if Coinbase fails.
+   * Trades use the PTAX frozen on them instead (see server/ptax.ts).
+   */
+  let liveFx: { rates: Record<"USD" | "EUR" | "CHF", string>; fetchedAt: string; expiresAt: number } | null = null;
+  app.get(
+    "/api/fx",
+    requireAuth,
+    wrap(async (_req, res) => {
+      const now = Date.now();
+      res.setHeader("Cache-Control", "no-store");
+      if (!liveFx || liveFx.expiresAt <= now) {
+        try {
+          const base = (process.env.COINBASE_RATES_URL?.trim() || "https://api.coinbase.com").replace(/\/+$/, "");
+          const rates = await coinbaseLiveRates(dataFetch, base);
+          liveFx = { rates, fetchedAt: new Date(now).toISOString(), expiresAt: now + 10 * 60_000 };
+        } catch (error: any) {
+          console.warn(`[fx] coinbase falhou (status ${Number(error?.status) || "-"})`);
+          if (!liveFx) throw new HttpError(502, "Não foi possível obter o câmbio agora. Tente de novo em instantes.");
+          return res.json({ base: "BRL", rates: liveFx.rates, source: "coinbase", fetchedAt: liveFx.fetchedAt, stale: true });
+        }
+      }
+      res.json({ base: "BRL", rates: liveFx.rates, source: "coinbase", fetchedAt: liveFx.fetchedAt });
+    })
+  );
+
+  /** Until v0.13.x: a page opened before the update still asks here (until it is reloaded). */
   app.get(
     "/api/fx/usdbrl",
     requireAuth,
     wrap(async (_req, res) => {
       const now = Date.now();
-      if (!usdBrl || usdBrl.expiresAt <= now) {
+      res.setHeader("Cache-Control", "no-store");
+      if (!liveFx || liveFx.expiresAt <= now) {
         try {
           const base = (process.env.COINBASE_RATES_URL?.trim() || "https://api.coinbase.com").replace(/\/+$/, "");
-          const rate = await coinbaseUsdBrl(dataFetch, base);
-          usdBrl = { rate, fetchedAt: new Date(now).toISOString(), expiresAt: now + 10 * 60_000 };
-        } catch (error: any) {
-          console.warn(`[fx] coinbase falhou (status ${Number(error?.status) || "-"})`);
-          if (!usdBrl) throw new HttpError(502, "Não foi possível obter o câmbio agora. Tente de novo em instantes.");
-          return res.json({ pair: "USDBRL", rate: usdBrl.rate, source: "coinbase", fetchedAt: usdBrl.fetchedAt, stale: true });
+          liveFx = { rates: await coinbaseLiveRates(dataFetch, base), fetchedAt: new Date(now).toISOString(), expiresAt: now + 10 * 60_000 };
+        } catch {
+          if (!liveFx) throw new HttpError(502, "Não foi possível obter o câmbio agora. Tente de novo em instantes.");
         }
       }
-      res.setHeader("Cache-Control", "no-store");
-      res.json({ pair: "USDBRL", rate: usdBrl.rate, source: "coinbase", fetchedAt: usdBrl.fetchedAt });
+      res.json({ pair: "USDBRL", rate: Number(liveFx.rates.USD), source: "coinbase", fetchedAt: liveFx.fetchedAt });
     })
   );
 

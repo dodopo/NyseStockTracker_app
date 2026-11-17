@@ -16,6 +16,32 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.14.0] - 2026-11-17
+
+**Classificações e multimoeda.** Each asset gets liquidity, horizon and jurisdiction; each trade records the currency paid and the Banco Central PTAX of its date, so cost and results can be shown in BRL, USD, EUR or CHF at the historical rate. **Database migration v8 (adds columns only): back up first.** An older version still runs on the migrated database, but going back is safest by restoring the backup, which `dodopoam-update` does by itself on failure.
+
+### Added
+- **PTAX frozen on each trade.** Saving a trade fetches the Banco Central closing bulletin (buy and sell, USD, EUR and CHF in reais) of its date from the BCB open data API (no key; only dates and currency codes are sent). Weekends and holidays use the last business day before (shown on the trade). A trade of today before the bulletin (~13h) gets the previous day's rate marked **provisional**, replaced automatically; trades without PTAX (BCB down, restored backups, older versions) are filled in every 30 minutes. Final rates are cached per date.
+- **Currency paid** on each trade: BRL, USD, EUR or CHF (default: the asset's currency). A trade paid in another currency enters the average price at its own PTAX; while its PTAX is not known it uses today's rate (flagged as approximate) and, with no rate at all, it is left out of the position (flagged), never counted in the wrong currency.
+- Old dates: a currency the BCB did not quote then (the euro before 1999) is left out of that trade's PTAX (conversions to it use today's rate); a date with no PTAX at all is not asked again. Future dates wait for their day.
+- **Consolidated and Visão Global in USD, BRL, EUR or CHF.** Cost, average price and realized result use the PTAX (sell) of each trade's date; only the current price uses today's rate (Coinbase, 10 min cache). The P/L in another currency therefore includes the exchange-rate variation. A note says how many trades still have no PTAX (converted at today's rate meanwhile).
+- **Classification of each asset** (per portfolio): liquidity (Líquido/Ilíquido), horizon in calendar days (Curtíssimo up to 30, Curto 31-180, Médio 181-720, Longo 721-1,800, Longuíssimo above 1,800) and jurisdiction (Onshore/Offshore), "Não definido" where it applies. US stocks start Offshore; crypto starts "Não definido". "Aplicar a todos os ativos da aba" copies one asset's classification to the whole tab (asks first).
+- **Allocation** by liquidity, horizon, jurisdiction and currency (exposure; crypto shown apart), besides portfolio, tab and asset.
+- Each trade in the history shows its PTAX (US$ 1 = R$ x, with EUR and CHF on hover) or "PTAX pendente".
+- API: `PATCH /api/stocks/:ticker/classification`, `POST /api/tabs/:id/classification`, `GET /api/fx` (reais per USD, EUR, CHF). Trades accept `currency` and return `fx`.
+
+### Changed
+- `GET /api/fx` (reais per USD, EUR, CHF) replaces `GET /api/fx/usdbrl`, which stays for pages opened before the update.
+- A SELL larger than the position is refused before asking the Banco Central.
+- Backups carry classification, currency and PTAX; backups from older versions get the defaults (and the PTAX is fetched again).
+- "Aplicar a todos os ativos da aba" is covered by the confirmation guard (`tests/confirm.test.ts`).
+
+### Security
+- New routes are scoped to the logged-in user and the portfolio in `X-Portfolio-Id` (another portfolio's tab or asset is 404). Allowed values are checked by the server (zod, unknown fields refused) and by the database (CHECK constraints).
+- Restoring a backup keeps a trade's PTAX only if it is coherent (rates within a sane range, bulletin on or up to 15 days before the trade); otherwise it is fetched again from the BCB.
+- Independent review before release: 1 high and 5 low/medium findings, all fixed, each with a test that fails without the fix.
+
+
 ## [0.13.1] - 2026-11-17
 
 **Nothing is deleted without asking.** No database change; updating is enough (no restore needed to go back to v0.13.0).

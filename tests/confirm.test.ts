@@ -12,7 +12,7 @@ import { confirmDestructive } from "../src/lib/confirm";
 const SRC = path.resolve(__dirname, "../src");
 
 /** Endpoints (src/api/endpoints.ts) that delete or overwrite data. */
-const DESTRUCTIVE = /\b(portfolioApi\.(deleteStock|deleteTransaction|importBackup)|tabsApi\.remove|authApi\.deleteAccount|portfoliosApi\.remove)\(/g;
+const DESTRUCTIVE = /\b(portfolioApi\.(deleteStock|deleteTransaction|importBackup)|tabsApi\.(remove|classify)|authApi\.deleteAccount|portfoliosApi\.remove)\(/g;
 
 /**
  * Protected another way: deleting a portfolio needs the password AND the
@@ -61,6 +61,7 @@ describe("confirmação antes de apagar", () => {
         "portfolioApi.deleteTransaction",
         "portfolioApi.importBackup",
         "portfoliosApi.remove",
+        "tabsApi.classify",
         "tabsApi.remove",
       ].sort()
     );
