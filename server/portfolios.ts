@@ -10,7 +10,7 @@
 import type express from "express";
 import { DEFAULT_TAB, type DB } from "./db";
 import { HttpError, nowIso, parseBody, wrap } from "./http";
-import { STOCK_COLUMNS, TX_COLUMNS, createTxOut } from "./columns";
+import { STOCK_COLUMNS, TX_COLUMNS, createStockOut, createTxOut } from "./columns";
 import {
   portfolioCreateSchema,
   portfolioDeleteSchema,
@@ -107,6 +107,7 @@ export function createPortfolios(
   };
 
   const txOut = createTxOut(db);
+  const stockOut = createStockOut(db);
 
   /** Creates a portfolio with the default tab. Call inside a transaction. */
   function createPortfolio(userId: number, name: string, color: string) {
@@ -241,7 +242,7 @@ export function createPortfolios(
           sortOrder: t.sort_order,
           assetCount: t.asset_count ?? 0,
         })),
-        stocks: q.globalStocks.all(user.id),
+        stocks: stockOut(q.globalStocks.all(user.id) as Array<{ id: number; asset_type?: string }>, user.id),
         transactions: txOut(q.globalTx.all(user.id, user.id) as Array<{ id: number; type: string; fx: unknown }>, user.id),
       });
     });

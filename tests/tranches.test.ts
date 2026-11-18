@@ -264,7 +264,7 @@ describe("migração v9", () => {
     stock.run("MSFT", "Microsoft", T, null);
     stock.run("NVDA", "Nvidia", T, "ultra_long");
     const before = db.prepare(`SELECT * FROM stocks ORDER BY id`).all();
-    migrate(db);
+    migrate(db, 9);
     expect(db.pragma("user_version", { simple: true })).toBe(9);
     const after = db.prepare(`SELECT * FROM stocks ORDER BY id`).all() as any[];
     // tab_id aside: opening the database puts assets without a tab in a default tab

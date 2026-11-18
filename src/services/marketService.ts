@@ -1,5 +1,5 @@
 import { api } from "../api/client";
-import { displaySymbol, type AssetType } from "../../shared/assetTypes";
+import { displaySymbol, isManualTicker, type AssetType } from "../../shared/assetTypes";
 
 export interface StockPrice {
   ticker: string;
@@ -38,8 +38,14 @@ function toStockPrice(symbol: string, q: QuoteDto): StockPrice {
   };
 }
 
+/** Symbols that have a market quote (illiquid assets and cash are valued in the app). */
+export function marketSymbols(tickers: string[]) {
+  return [...new Set(tickers.filter((t) => !isManualTicker(t)))];
+}
+
 /** Quotes for up to 50 symbols in one request. Failed symbols are simply absent. */
-export async function fetchQuotes(symbols: string[]): Promise<StockPrice[]> {
+export async function fetchQuotes(tickers: string[]): Promise<StockPrice[]> {
+  const symbols = marketSymbols(tickers);
   if (symbols.length === 0) return [];
   try {
     const query = symbols.map(encodeURIComponent).join(",");

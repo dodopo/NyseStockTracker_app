@@ -6,11 +6,11 @@ import { useLiveFx } from "../../hooks/useLiveFx";
 import { cn, formatCurrency, formatPrice, formatQuantity, type Currency } from "../../lib/utils";
 import type { StockPrice } from "../../services/marketService";
 import type { ConsolidationMode, Portfolio, PortfolioItem, Stock, Tab, Transaction } from "../../types";
-import { buildRows, maturityAllocation } from "./rows";
+import { assetsLeftOut, buildRows, maturityAllocation } from "./rows";
 import { localToday, type MaturityBucket } from "../../../shared/tranches";
-import { displaySymbol } from "../../../shared/assetTypes";
+import { assetLabel } from "../../../shared/assetTypes";
 import { CURRENCIES, isCurrency } from "../../../shared/currencies";
-import { HORIZON, JURISDICTION, LIQUIDITY, NOT_DEFINED } from "../../../shared/classification";
+import { CUSTODY, HORIZON, JURISDICTION, LIQUIDITY, NOT_DEFINED } from "../../../shared/classification";
 import { NO_TAB_KEY, allocationSlices, passesTabFilter, toggleTabFilter, type TabFilterKey } from "../../../shared/allocation";
 
 const TAB_FILTER_KEY = "nyse.consolidated.tabs";
@@ -19,12 +19,13 @@ const ALLOC_KEY = "nyse.consolidated.allocBy";
 const HORIZON_MODE_KEY = "dam.consolidated.horizonMode";
 type HorizonMode = "thesis" | "maturity";
 const PORTFOLIO_FILTER_KEY = "dam.global.portfolios";
-type AllocBy = "portfolio" | "tab" | "asset" | "liquidity" | "horizon" | "jurisdiction" | "currency";
-const ALLOC_IDS: AllocBy[] = ["portfolio", "tab", "asset", "liquidity", "horizon", "jurisdiction", "currency"];
+type AllocBy = "portfolio" | "tab" | "asset" | "liquidity" | "horizon" | "jurisdiction" | "custody" | "currency";
+const ALLOC_IDS: AllocBy[] = ["portfolio", "tab", "asset", "liquidity", "horizon", "jurisdiction", "custody", "currency"];
 const UNDEFINED_COLOR = "#78909c";
 const LIQUIDITY_COLOR = { liquid: "#089981", illiquid: "#f7931a" } as const;
 const HORIZON_COLOR = { ultra_short: "#f23645", short: "#ffb74d", medium: "#2962ff", long: "#26a69a", ultra_long: "#ab47bc" } as const;
 const JURISDICTION_COLOR = { onshore: "#089981", offshore: "#2962ff" } as const;
+const CUSTODY_COLOR = { institution: "#2962ff", self: "#f7931a" } as const;
 const CURRENCY_COLOR: Record<string, string> = { BRL: "#089981", USD: "#2962ff", EUR: "#ab47bc", CHF: "#f23645", crypto: "#f7931a" };
 const CURRENCY_SYMBOL: Record<Currency, string> = { BRL: "R$", USD: "US$", EUR: "€", CHF: "CHF" };
 const MATURITY_LABEL: Record<MaturityBucket, string> = {
@@ -126,6 +127,7 @@ export function ConsolidatedDashboard({
   );
   const approxTrades = rows.reduce((sum, r) => sum + r.approxTrades, 0);
   const missingTrades = rows.reduce((sum, r) => sum + r.missingTrades, 0);
+  const leftOut = assetsLeftOut(stocks, shownCurrency, live);
 
   const tabById = new Map(tabs.map((t) => [t.id, t]));
   const tabKeyOf = (r: PortfolioItem) => {
@@ -203,7 +205,7 @@ export function ConsolidatedDashboard({
           )
         : allocBy === "asset"
           ? // the same asset in two portfolios counts once, summed
-            sumBy((r) => r.ticker, (r) => displaySymbol(r.ticker))
+            sumBy((r) => r.ticker, (r) => assetLabel(r))
           : allocBy === "liquidity"
             ? sumBy((r) => r.liquidity, (r) => LIQUIDITY[r.liquidity], (r) => LIQUIDITY_COLOR[r.liquidity])
             : allocBy === "horizon" && horizonMode === "maturity"
@@ -227,6 +229,12 @@ export function ConsolidatedDashboard({
                     (r) => (r.jurisdiction ? JURISDICTION[r.jurisdiction] : NOT_DEFINED),
                     (r) => (r.jurisdiction ? JURISDICTION_COLOR[r.jurisdiction] : UNDEFINED_COLOR)
                   )
+                : allocBy === "custody"
+                  ? sumBy(
+                      (r) => r.custody ?? "none",
+                      (r) => (r.custody ? CUSTODY[r.custody] : NOT_DEFINED),
+                      (r) => (r.custody ? CUSTODY_COLOR[r.custody] : UNDEFINED_COLOR)
+                    )
                 : // exposure: the asset's own currency; crypto is its own risk, shown apart
                   sumBy(
                     (r) => (r.isCrypto ? "crypto" : r.assetCurrency),
@@ -241,6 +249,7 @@ export function ConsolidatedDashboard({
     ["liquidity", "Por liquidez"],
     ["horizon", "Por prazo"],
     ["jurisdiction", "Por jurisdição"],
+    ["custody", "Por custódia"],
     ["currency", "Por moeda"],
   ];
   const allocLabel = (allocOptions.find(([v]) => v === allocBy)?.[1] ?? "").toLowerCase();
@@ -354,6 +363,12 @@ export function ConsolidatedDashboard({
             <span className="text-[10px] text-tv-down text-right">
               {missingTrades === 1 ? "1 operação em outra moeda ficou" : `${missingTrades} operações em outra moeda ficaram`} fora dos valores: sem PTAX e
               sem câmbio de hoje
+            </span>
+          )}
+          {leftOut > 0 && (
+            <span className="text-[10px] text-tv-down text-right">
+              {leftOut === 1 ? "1 ativo em outra moeda ficou" : `${leftOut} ativos em outra moeda ficaram`} FORA dos valores:{" "}
+              {fx.status === "loading" ? "carregando o câmbio de hoje" : "sem o câmbio de hoje"}
             </span>
           )}
           {currency !== "USD" && fx.status === "error" && (
@@ -494,22 +509,22 @@ export function ConsolidatedDashboard({
                         key={it.key}
                         tabIndex={0}
                         role="link"
-                        aria-label={`Abrir ${displaySymbol(it.ticker)} em ${label}`}
-                        title={`Abrir ${displaySymbol(it.ticker)}`}
+                        aria-label={`Abrir ${assetLabel(it)} em ${label}`}
+                        title={`Abrir ${assetLabel(it)}`}
                         onClick={() => onOpenAsset(it.ticker, it.tabId, it.portfolioId)}
                         onKeyDown={(e) => e.key === "Enter" && onOpenAsset(it.ticker, it.tabId, it.portfolioId)}
                         className="group border-b border-tv-border/50 hover:bg-white/5 cursor-pointer transition-colors focus:outline-none focus:bg-white/5 focus:ring-2 focus:ring-inset focus:ring-tv-accent/40"
                       >
                         <td className="py-4 pl-2 font-bold">
                           <div className="flex items-center gap-1">
-                            {displaySymbol(it.ticker)}
+                            {assetLabel(it)}
                             <ChevronRight
                               size={14}
                               className="text-tv-accent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity"
                             />
                           </div>
                           <div className="text-[10px] text-tv-text/40 font-normal">
-                            {it.name}
+                            {it.manualPrice ? <ManualPriceNote mp={it.manualPrice} /> : it.name}
                             {isGlobal && tabKeyOf(it) !== NO_TAB_KEY && <> · {tabById.get(it.tabId!)!.name}</>}
                           </div>
                         </td>
@@ -548,4 +563,12 @@ export function ConsolidatedDashboard({
       </Card>
     </div>
   );
+}
+
+/** Where the price of an illiquid asset or cash account comes from (no market quote). */
+function ManualPriceNote({ mp }: { mp: NonNullable<PortfolioItem["manualPrice"]> }) {
+  if (mp.source === "cash") return <>Caixa</>;
+  if (mp.source === "cost") return <span className="text-amber-400">sem avaliação: pelo custo</span>;
+  const date = mp.date!.split("-").reverse().join("/");
+  return <span className={mp.stale ? "text-amber-400" : undefined}>avaliado em {date}{mp.stale ? " (antiga)" : ""}</span>;
 }

@@ -1,13 +1,13 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { Check, Globe, Loader2, Plus, Settings2 } from "lucide-react";
-import { portfoliosApi } from "../../api/endpoints";
+import { marketApi, portfoliosApi } from "../../api/endpoints";
 import { errorMessage } from "../../api/client";
 import { ColorPicker } from "../../components/ColorPicker";
 import { ErrorMessage } from "../../components/ui";
 import { fetchQuotes, pricesToMap } from "../../services/marketService";
 import { cn, formatCurrency } from "../../lib/utils";
 import { GLOBAL_VIEW, type PortfoliosState } from "../../hooks/usePortfolios";
-import { buildRows, valueByPortfolio } from "../consolidated/rows";
+import { assetsLeftOut, buildRows, valueByPortfolio } from "../consolidated/rows";
 import { TAB_COLORS } from "../../../shared/assetTypes";
 import { firstIssue, portfolioCreateSchema } from "../../../shared/schemas";
 import type { Portfolio } from "../../types";
@@ -39,6 +39,8 @@ export function PortfolioAvatar({ portfolio, size = 32 }: { portfolio: Pick<Port
 export function PortfolioSwitcher({ state, onManage }: { state: PortfoliosState; onManage: () => void }) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Map<number, number> | null>(null);
+  // Assets left out of the totals for lack of today's rates (never a silently smaller total).
+  const [leftOut, setLeftOut] = useState(0);
   const [creating, setCreating] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -51,9 +53,15 @@ export function PortfolioSwitcher({ state, onManage }: { state: PortfoliosState;
     void (async () => {
       try {
         const g = await portfoliosApi.global();
-        const tickers = [...new Set(g.stocks.map((s) => s.ticker))];
-        const prices = tickers.length ? pricesToMap(await fetchQuotes(tickers)) : {};
-        if (!cancelled) setValues(valueByPortfolio(buildRows(g.stocks, g.transactions, prices)));
+        // Today's rates: an asset in reais, euros or francs (cash, illiquid) is summed
+        // in dollars too; without them it would be left out of the portfolio's value.
+        const [prices, live] = await Promise.all([
+          fetchQuotes(g.stocks.map((s) => s.ticker)).then(pricesToMap),
+          marketApi.fx().then((fx) => fx.rates, () => null),
+        ]);
+        if (cancelled) return;
+        setValues(valueByPortfolio(buildRows(g.stocks, g.transactions, prices, "USD", live)));
+        setLeftOut(assetsLeftOut(g.stocks, "USD", live));
       } catch {
         if (!cancelled) setValues(new Map());
       }
@@ -129,6 +137,13 @@ export function PortfolioSwitcher({ state, onManage }: { state: PortfoliosState;
               />
             </li>
           </ul>
+
+          {leftOut > 0 && (
+            <p className="px-4 py-2 text-[10px] text-tv-down border-t border-white/5">
+              Sem o câmbio de hoje: {leftOut === 1 ? "1 ativo em real, euro ou franco ficou" : `${leftOut} ativos em real, euro ou franco ficaram`} fora dos
+              totais.
+            </p>
+          )}
 
           <div className="border-t border-white/10 p-2 space-y-1">
             {creating ? (

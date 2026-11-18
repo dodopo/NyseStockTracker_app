@@ -4,6 +4,8 @@ import { ApiError } from "../api/client";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
 import type { ClassificationChanges, NewTransaction, Stock, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
+import type { CurrencyCode } from "../../shared/currencies";
+import type { Valuation } from "../../shared/manualAssets";
 import { confirmDestructive } from "../lib/confirm";
 
 /**
@@ -109,6 +111,37 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     [loadPrices]
   );
 
+  /** An illiquid asset or cash account; returns its ticker (internal identity). */
+  const addManualStock = useCallback(async (stock: { name: string; tabId: number; currency: CurrencyCode }) => {
+    const pid = pinned();
+    const created = await portfolioApi.addManualStock(pid, stock);
+    const [nextStocks, nextTabs] = await Promise.all([portfolioApi.stocks(pid), tabsApi.list(pid)]);
+    if (still(pid)) {
+      setStocks(nextStocks);
+      setTabs(nextTabs);
+    }
+    return created.ticker;
+  }, []);
+
+  const renameStock = useCallback(async (ticker: string, name: string) => {
+    const pid = pinned();
+    const updated = await portfolioApi.renameStock(pid, ticker, name);
+    if (still(pid)) setStocks((cur) => cur.map((s) => (s.ticker === ticker ? { ...s, ...updated } : s)));
+  }, []);
+
+  // Valuations of an illiquid asset: the server answers with the asset's whole list.
+  const putValuations = (pid: number, ticker: string, valuations: Valuation[]) => {
+    if (still(pid)) setStocks((cur) => cur.map((s) => (s.ticker === ticker ? { ...s, valuations } : s)));
+  };
+  const addValuation = useCallback(async (ticker: string, v: { date: string; price: string; note: string }) => {
+    const pid = pinned();
+    putValuations(pid, ticker, await portfolioApi.addValuation(pid, ticker, v));
+  }, []);
+  const updateValuation = useCallback(async (ticker: string, id: number, v: { date: string; price: string; note: string }) => {
+    const pid = pinned();
+    putValuations(pid, ticker, await portfolioApi.updateValuation(pid, id, v));
+  }, []);
+
   const addTab = useCallback(async (tab: { name: string; assetType: AssetType; color: string }) => {
     const pid = pinned();
     const created = await tabsApi.create(pid, tab);
@@ -157,6 +190,16 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     });
     return true;
   }, [reloadTabs]);
+
+  const deleteValuation = useCallback(async (ticker: string, id: number, question: string) => {
+    if (!confirmDestructive(question)) return false;
+    const pid = pinned();
+    await portfolioApi.deleteValuation(pid, id);
+    if (still(pid)) {
+      setStocks((cur) => cur.map((s) => (s.ticker === ticker ? { ...s, valuations: (s.valuations ?? []).filter((v) => v.id !== id) } : s)));
+    }
+    return true;
+  }, []);
 
   const classifyStock = useCallback(async (ticker: string, changes: ClassificationChanges) => {
     const pid = pinned();
@@ -208,6 +251,11 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     reload,
     refreshPrices,
     addStock,
+    addManualStock,
+    renameStock,
+    addValuation,
+    updateValuation,
+    deleteValuation,
     deleteStock,
     addTab,
     updateTab,

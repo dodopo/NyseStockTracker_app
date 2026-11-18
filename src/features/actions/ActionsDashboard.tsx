@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, History, Loader2, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Check, History, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { motion } from "motion/react";
 import { format } from "date-fns";
 import { ApiError, errorMessage } from "../../api/client";
@@ -8,7 +8,10 @@ import { cn, formatCurrency, formatPercent, formatPrice, formatQuantity } from "
 import { searchAssets, type SearchHit } from "../../services/marketService";
 import type { PortfolioState } from "../../hooks/usePortfolio";
 import type { Stock, Tab, TransactionType } from "../../types";
-import { ASSET_TYPES, displaySymbol, type AssetType } from "../../../shared/assetTypes";
+import { ASSET_TYPES, assetLabel, assetTypeOfTicker, isManualType, type AssetType } from "../../../shared/assetTypes";
+import { STALE_VALUATION_DAYS, manualPrice } from "../../../shared/manualAssets";
+import { ValuationChart, ValuationsCard } from "./ValuationsCard";
+import { manualStockSchema } from "../../../shared/schemas";
 import { calculatePosition } from "../../../shared/positions";
 import { convertTrades } from "../../../shared/fxPositions";
 import { CURRENCIES, CURRENCY_LABEL, isCurrency, type CurrencyCode } from "../../../shared/currencies";
@@ -21,6 +24,7 @@ import { defaultClassification } from "../../../shared/classification";
 import { defaultTargetDays, localToday, replayTranches, type LotChoice, type TrancheTrade } from "../../../shared/tranches";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
 import { compareTransactions } from "../../../shared/validation";
+import { Big } from "../../../shared/decimal";
 // The chart library is large: load it only when an asset is opened.
 const PriceChart = lazy(() => import("../chart/PriceChart").then((m) => ({ default: m.PriceChart })));
 import { StatsCard } from "../chart/StatsCard";
@@ -79,7 +83,80 @@ export function ActionsDashboard({
   );
 }
 
-function AddStockCard({
+function AddStockCard(props: { tab: Tab; portfolio: PortfolioState; onAdded: (ticker: string) => void; onOpenSettings: () => void }) {
+  return isManualType(props.tab.assetType) ? <AddManualCard {...props} /> : <SearchAddCard {...props} />;
+}
+
+/** Illiquid asset or cash account: no search, just a name and the currency it is in. */
+function AddManualCard({ tab, portfolio, onAdded }: { tab: Tab; portfolio: PortfolioState; onAdded: (ticker: string) => void }) {
+  const type = ASSET_TYPES[tab.assetType];
+  const [name, setName] = useState("");
+  const [currency, setCurrency] = useState<CurrencyCode>("BRL");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameId = useId();
+  const currencyId = useId();
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const check = manualStockSchema.safeParse({ name, tabId: tab.id, currency });
+    if (!check.success) {
+      setError(firstIssue(check.error));
+      return;
+    }
+    setSaving(true);
+    try {
+      const ticker = await portfolio.addManualStock(check.data);
+      setName("");
+      onAdded(ticker);
+    } catch (err) {
+      setError(errorMessage(err, "Erro ao adicionar"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card title={type.addTitle}>
+      <form onSubmit={add} className="space-y-3">
+        <div className="space-y-1">
+          <FieldLabel htmlFor={nameId}>Nome</FieldLabel>
+          <input
+            id={nameId}
+            type="text"
+            className="tv-input w-full"
+            placeholder={type.searchPlaceholder}
+            value={name}
+            maxLength={120}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <FieldLabel htmlFor={currencyId}>{tab.assetType === "cash" ? "Moeda da conta" : "Moeda do ativo"}</FieldLabel>
+          <select id={currencyId} className="tv-input w-full" value={currency} onChange={(e) => setCurrency(e.target.value as CurrencyCode)}>
+            {CURRENCIES.map((c) => (
+              <option key={c} value={c}>
+                {CURRENCY_LABEL[c]}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-tv-text/40">
+            {tab.assetType === "cash"
+              ? "Fixa: cada unidade vale 1 nesta moeda. Depósitos pagos em outra moeda guardam o câmbio pago."
+              : "Fixa: as avaliações e o valor do ativo ficam nesta moeda."}
+          </p>
+        </div>
+        <button type="submit" disabled={saving} className="tv-btn w-full flex items-center justify-center gap-2">
+          {saving ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />} Adicionar
+        </button>
+        <ErrorMessage>{error}</ErrorMessage>
+      </form>
+    </Card>
+  );
+}
+
+function SearchAddCard({
   tab,
   portfolio,
   onAdded,
@@ -193,14 +270,17 @@ function StockListCard({
   selectedTicker: string | null;
   onSelect: (ticker: string | null) => void;
 }) {
-  const type = ASSET_TYPES[tab.assetType];
+  const type = { ...ASSET_TYPES[tab.assetType], id: tab.assetType };
 
-  const remove = async (ticker: string) => {
+  const remove = async (stock: Stock) => {
+    const ticker = stock.ticker;
     const count = portfolio.transactions.filter((t) => t.ticker === ticker).length;
-    const question =
-      count > 0
-        ? `Excluir ${displaySymbol(ticker)} e ${count === 1 ? "a transação dele" : `as ${count} transações dele`}?`
-        : `Excluir ${displaySymbol(ticker)}?`;
+    const vals = stock.valuations?.length ?? 0;
+    const parts = [
+      count > 0 ? (count === 1 ? "a transação dele" : `as ${count} transações dele`) : "",
+      vals > 0 ? (vals === 1 ? "a avaliação dele" : `as ${vals} avaliações dele`) : "",
+    ].filter(Boolean);
+    const question = `Excluir ${assetLabel(stock)}${parts.length ? ` e ${parts.join(" e ")}` : ""}?`;
     try {
       if (!(await portfolio.deleteStock(ticker, question))) return;
       if (selectedTicker === ticker) {
@@ -229,19 +309,21 @@ function StockListCard({
                   : "bg-white/5 border border-transparent hover:border-white/20"
               )}
             >
-              <div>
-                <div className="font-bold">{displaySymbol(stock.ticker)}</div>
-                <div className="text-xs text-tv-text/60 truncate max-w-[150px]">{stock.name}</div>
+              <div className="min-w-0">
+                <div className="font-bold truncate max-w-[180px]">{assetLabel(stock)}</div>
+                <div className="text-xs text-tv-text/60 truncate max-w-[180px]">
+                  {isManualType(type.id) ? CURRENCY_LABEL[isCurrency(stock.currency) ? stock.currency : "BRL"] : stock.name}
+                </div>
               </div>
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  void remove(stock.ticker);
+                  void remove(stock);
                 }}
                 className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-tv-down hover:scale-110 transition-all"
-                title={`Excluir ${displaySymbol(stock.ticker)}`}
-                aria-label={`Excluir ${displaySymbol(stock.ticker)}`}
+                title={`Excluir ${assetLabel(stock)}`}
+                aria-label={`Excluir ${assetLabel(stock)}`}
               >
                 <Trash2 size={16} />
               </button>
@@ -257,7 +339,7 @@ function StockListCard({
 }
 
 function assetTypeOf(stock: Stock): AssetType {
-  return stock.asset_type ?? (stock.ticker.startsWith("X:") ? "crypto" : "us_stock");
+  return stock.asset_type ?? assetTypeOfTicker(stock.ticker);
 }
 
 function StockDetail({
@@ -275,7 +357,9 @@ function StockDetail({
   transactions: PortfolioState["transactions"];
   onOpenSettings: () => void;
 }) {
-  const currentPrice = price?.price || 0;
+  const assetType = assetTypeOf(stock);
+  const isCash = assetType === "cash";
+  const isIlliquid = assetType === "illiquid";
   // Everything here is in the asset's own currency; a trade paid in another
   // currency enters at the PTAX frozen on it.
   const assetCurrency: CurrencyCode = isCurrency(stock.currency) ? stock.currency : "USD";
@@ -284,24 +368,47 @@ function StockDetail({
   const fx = useLiveFx(needsLive);
   const live = needsLive && fx.status === "ready" ? fx.rates : null;
   const native = useMemo(() => convertTrades(transactions, assetCurrency, assetCurrency, live), [transactions, assetCurrency, live]);
+  const today = localToday();
+  // Illiquid: the latest valuation (or the average cost); cash: 1; else the market quote.
+  const manual = useMemo(
+    () => manualPrice(assetType, stock.valuations, calculatePosition(native.trades, 0).avgCost, today),
+    [assetType, stock.valuations, native, today]
+  );
+  const currentPrice = manual ? manual.price : price?.price || 0;
   const position = useMemo(() => calculatePosition(native.trades, currentPrice), [native, currentPrice]);
   const tradeCurrency = (t: { currency?: string }) => (isCurrency(t.currency) ? t.currency : assetCurrency);
 
   // Tranches: quantities from the real trades, prices in the asset's currency (each at its PTAX).
   const horizon = stock.horizon === undefined ? defaultClassification(assetTypeOf(stock)).horizon : stock.horizon;
   const assetTargetDays = stock.target_days === undefined ? defaultTargetDays(horizon) : stock.target_days;
-  const today = localToday();
   const tranches = useMemo(() => {
     // the same trades as the position (a trade left out for lack of a rate stays out here too)
     return replayTranches(native.trades, assetTargetDays);
   }, [native, transactions, assetTargetDays]);
   const buyDate = useMemo(() => new Map(transactions.filter((t) => t.type === "BUY").map((t) => [t.id, t.date])), [transactions]);
   const history = useMemo(() => [...transactions].sort(compareTransactions).reverse(), [transactions]);
+  // Cash statement: the balance after each movement (exact decimals, in chronological order).
+  // The balance is the quantity itself: it never depends on an exchange rate, so a
+  // movement paid in another currency still counts even before its PTAX is known.
+  const { balanceAfter, balance } = useMemo(() => {
+    const out = new Map<number, number>();
+    let total = new Big(0);
+    if (isCash) {
+      for (const t of [...transactions].sort(compareTransactions)) {
+        total = t.type === "BUY" ? total.plus(t.shares) : total.minus(t.shares);
+        if (t.id !== undefined) out.set(t.id, Number(total.toString()));
+      }
+    }
+    return { balanceAfter: out, balance: Number(total.toString()) };
+  }, [transactions, isCash]);
 
   const removeTransaction = async (t: (typeof transactions)[number]) => {
     if (!t.id) return;
-    const kind = t.type === "BUY" ? "COMPRA" : "VENDA";
-    const question = `Excluir a ${kind} de ${displaySymbol(stock.ticker)} de ${t.date}: ${formatQuantity(t.shares)} un @ ${formatPrice(t.price, tradeCurrency(t))}?`;
+    const kind = isCash ? (t.type === "BUY" ? "o DEPÓSITO" : "o SAQUE") : t.type === "BUY" ? "a COMPRA" : "a VENDA";
+    const what = isCash
+      ? `${formatCurrency(Number(t.shares), assetCurrency)}${tradeCurrency(t) !== assetCurrency ? ` a ${formatPrice(t.price, tradeCurrency(t))}` : ""}`
+      : `${formatQuantity(t.shares)} un @ ${formatPrice(t.price, tradeCurrency(t))}`;
+    const question = `Excluir ${kind} de ${assetLabel(stock)} de ${t.date}: ${what}?`;
     try {
       await portfolio.deleteTransaction(t.id, question);
     } catch (err) {
@@ -311,11 +418,37 @@ function StockDetail({
 
   return (
     <>
-      <div className="flex justify-between items-end">
-        <div>
-          <h2 className="text-3xl font-bold">{displaySymbol(stock.ticker)}</h2>
-          <p className="text-tv-text/60">{stock.name}</p>
+      <div className="flex justify-between items-end gap-4">
+        <div className="min-w-0">
+          {isManualType(assetType) ? (
+            <ManualTitle stock={stock} portfolio={portfolio} />
+          ) : (
+            <>
+              <h2 className="text-3xl font-bold">{assetLabel(stock)}</h2>
+              <p className="text-tv-text/60">{stock.name}</p>
+            </>
+          )}
         </div>
+        {manual ? (
+          <div className="text-right shrink-0">
+            <div className="text-2xl font-mono">
+              {isCash ? formatCurrency(balance, assetCurrency) : formatCurrency(currentPrice * position.shares, assetCurrency)}
+            </div>
+            <div
+              className={cn(
+                "text-xs",
+                manual.source === "cost" || manual.stale ? "text-amber-400" : "text-tv-text/50"
+              )}
+            >
+              {isCash
+                ? "saldo"
+                : manual.source === "cost"
+                  ? "sem avaliação: pelo custo"
+                  : `avaliado em ${manual.date!.split("-").reverse().join("/")} (${manual.ageDays === 0 ? "hoje" : `há ${manual.ageDays!.toLocaleString("pt-BR")} dias`})` +
+                    (manual.stale ? ` · mais de ${STALE_VALUATION_DAYS} dias` : "")}
+            </div>
+          </div>
+        ) : (
         <div className="text-right">
           <div className="text-2xl font-mono">{formatPrice(currentPrice, assetCurrency)}</div>
           <div
@@ -328,8 +461,12 @@ function StockDetail({
             {formatPercent(price?.changePercent || 0)}
           </div>
         </div>
+        )}
       </div>
 
+      {isIlliquid && <ValuationChart valuations={stock.valuations ?? []} trades={native.trades} currency={assetCurrency} />}
+
+      {!manual && (
       <Suspense
         fallback={
           <Card className="h-[520px] flex items-center justify-center text-sm text-tv-text/40">Carregando gráfico…</Card>
@@ -347,24 +484,38 @@ function StockDetail({
           onOpenSettings={onOpenSettings}
         />
       </Suspense>
+      )}
 
+      {isCash ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Card title="Saldo">
+            <BigValue text={formatCurrency(balance, assetCurrency)} />
+          </Card>
+          <Card title="Movimentos">
+            <div className="text-2xl font-bold font-mono">{transactions.length}</div>
+            <div className="text-xs text-tv-text/40">depósitos e saques</div>
+          </Card>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Card title="Posição (Qtd)">
-          <div className="text-2xl font-bold font-mono">{formatQuantity(position.quantity)}</div>
+          <BigValue text={formatQuantity(position.quantity)} />
         </Card>
         <Card title="Preço Médio (PM)">
-          <div className="text-2xl font-bold font-mono">{formatPrice(position.avgCost, assetCurrency)}</div>
+          <BigValue text={formatPrice(position.avgCost, assetCurrency)} />
         </Card>
         <Card title="Investido (Aberto)">
-          <div className="text-2xl font-bold font-mono">{formatCurrency(position.openCost, assetCurrency)}</div>
+          <BigValue text={formatCurrency(position.openCost, assetCurrency)} />
         </Card>
         <Card title="P/L Não Realizado">
-          <div className={cn("text-2xl font-bold font-mono", position.unrealizedPnL >= 0 ? "text-tv-up" : "text-tv-down")}>
-            {formatCurrency(position.unrealizedPnL, assetCurrency)}
-          </div>
+          <BigValue
+            text={formatCurrency(position.unrealizedPnL, assetCurrency)}
+            className={position.unrealizedPnL >= 0 ? "text-tv-up" : "text-tv-down"}
+          />
           <div className="text-xs text-tv-text/40">{position.unrealizedPnLPct.toFixed(2)}%</div>
         </Card>
       </div>
+      )}
 
       {native.approx > 0 && (
         <p className="text-xs text-amber-400">
@@ -379,10 +530,13 @@ function StockDetail({
         </p>
       )}
 
-      <StatsCard symbol={stock.ticker} currentPrice={currentPrice} assetType={assetTypeOf(stock)} />
+      {!manual && <StatsCard symbol={stock.ticker} currentPrice={currentPrice} assetType={assetType} />}
+
+      {isIlliquid && <ValuationsCard stock={stock} currency={assetCurrency} quantity={position.shares} portfolio={portfolio} />}
 
       <ClassificationCard stock={stock} tab={tab} portfolio={portfolio} />
 
+      {!isCash && (
       <MaturityLadderCard
         tranches={tranches.open}
         today={today}
@@ -391,18 +545,21 @@ function StockDetail({
         assetTargetDays={assetTargetDays}
         portfolio={portfolio}
       />
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <TransactionForm
           ticker={stock.ticker}
+          assetType={assetType}
           assetCurrency={assetCurrency}
           assetTargetDays={assetTargetDays}
           trades={native.trades}
           quote={currentPrice}
+          quoteKind={manual?.source ?? "market"}
           portfolio={portfolio}
         />
 
-        <Card title="Histórico de Transações">
+        <Card title={isCash ? "Extrato" : "Histórico de Transações"}>
           <ul className="space-y-3 max-h-[340px] overflow-y-auto pr-2">
             {history.map((t) => (
               <li
@@ -411,20 +568,33 @@ function StockDetail({
               >
                 <div>
                   <div className={cn("text-xs font-bold", t.type === "BUY" ? "text-tv-up" : "text-tv-down")}>
-                    {t.type === "BUY" ? "COMPRA" : "VENDA"}
+                    {isCash ? (t.type === "BUY" ? "DEPÓSITO" : "SAQUE") : t.type === "BUY" ? "COMPRA" : "VENDA"}
                   </div>
-                  <div className="text-sm font-mono">
-                    {formatQuantity(t.shares)} un @ {formatPrice(t.price, tradeCurrency(t))}
-                  </div>
+                  {isCash ? (
+                    <div className="text-sm font-mono">
+                      {t.type === "BUY" ? "+" : "−"}
+                      {formatCurrency(Number(t.shares), assetCurrency)}
+                      {tradeCurrency(t) !== assetCurrency && (
+                        <div className="text-[10px] text-tv-text/50">câmbio pago: {formatPrice(t.price, tradeCurrency(t))} por {assetCurrency} 1</div>
+                      )}
+                      {t.id !== undefined && balanceAfter.has(t.id) && (
+                        <div className="text-[10px] text-tv-text/40">saldo depois: {formatCurrency(balanceAfter.get(t.id)!, assetCurrency)}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-sm font-mono">
+                      {formatQuantity(t.shares)} un @ {formatPrice(t.price, tradeCurrency(t))}
+                    </div>
+                  )}
                   <PtaxLine fx={t.fx} />
-                  {t.type === "SELL" && (
+                  {t.type === "SELL" && !isCash && (
                     <div className="text-[10px] text-tv-text/40">
                       {t.lots?.length
                         ? `Tranches: ${t.lots.map((l) => `${buyDate.get(l.buyId) ?? "?"} (${formatQuantity(l.shares)})`).join(", ")}`
                         : "Tranches: as mais antigas primeiro"}
                     </div>
                   )}
-                  {t.type === "BUY" && t.target_days != null && (
+                  {t.type === "BUY" && !isCash && t.target_days != null && (
                     <div className="text-[10px] text-tv-text/40">Prazo próprio: {t.target_days.toLocaleString("pt-BR")} dias</div>
                   )}
                 </div>
@@ -435,18 +605,98 @@ function StockDetail({
                     onClick={() => void removeTransaction(t)}
                     className="text-tv-text/20 hover:text-tv-down transition-colors"
                     title="Excluir transação"
-                    aria-label={`Excluir ${t.type === "BUY" ? "compra" : "venda"} de ${t.date}`}
+                    aria-label={`Excluir ${isCash ? (t.type === "BUY" ? "depósito" : "saque") : t.type === "BUY" ? "compra" : "venda"} de ${t.date}`}
                   >
                     <Trash2 size={14} />
                   </button>
                 </div>
               </li>
             ))}
-            {history.length === 0 && <li className="text-center py-10 text-tv-text/40 italic">Nenhuma transação</li>}
+            {history.length === 0 && <li className="text-center py-10 text-tv-text/40 italic">{isCash ? "Nenhum movimento" : "Nenhuma transação"}</li>}
           </ul>
         </Card>
       </div>
     </>
+  );
+}
+
+/**
+ * A number in a summary card: smaller type when it is long (a property in reais
+ * has 13+ characters), so it never runs out of the card.
+ */
+function BigValue({ text, className }: { text: string; className?: string }) {
+  const size = text.length > 15 ? "text-base" : text.length > 12 ? "text-lg" : text.length > 10 ? "text-xl" : "text-2xl";
+  return <div className={cn("font-bold font-mono whitespace-nowrap", size, className)}>{text}</div>;
+}
+
+/** Name of an illiquid asset or cash account (its only identity on screen), editable in place. */
+function ManualTitle({ stock, portfolio }: { stock: Stock; portfolio: PortfolioState }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(stock.name);
+  const [error, setError] = useState<string | null>(null);
+  const kind = assetTypeOf(stock) === "cash" ? "Caixa / conta" : "Ativo ilíquido";
+
+  const save = async () => {
+    const next = name.trim();
+    if (!next || next === stock.name) {
+      setEditing(false);
+      setName(stock.name);
+      return;
+    }
+    try {
+      await portfolio.renameStock(stock.ticker, next);
+      setEditing(false);
+      setError(null);
+    } catch (err) {
+      setError(errorMessage(err, "Não foi possível renomear."));
+    }
+  };
+
+  return (
+    <div>
+      {editing ? (
+        <div className="flex items-center gap-2">
+          <input
+            autoFocus
+            aria-label="Novo nome"
+            className="tv-input text-xl font-bold min-w-0"
+            value={name}
+            maxLength={120}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+              if (e.key === "Escape") {
+                setEditing(false);
+                setName(stock.name);
+              }
+            }}
+          />
+          <button type="button" onClick={() => void save()} className="text-tv-up" aria-label="Salvar nome">
+            <Check size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(false);
+              setName(stock.name);
+            }}
+            className="text-tv-text/40"
+            aria-label="Cancelar"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      ) : (
+        <h2 className="text-3xl font-bold flex items-center gap-2 min-w-0">
+          <span className="truncate">{stock.name}</span>
+          <button type="button" onClick={() => setEditing(true)} className="text-tv-text/30 hover:text-tv-text shrink-0" title="Renomear" aria-label="Renomear">
+            <Pencil size={16} />
+          </button>
+        </h2>
+      )}
+      <p className="text-tv-text/60">{kind}</p>
+      <ErrorMessage>{error}</ErrorMessage>
+    </div>
   );
 }
 
@@ -469,21 +719,27 @@ function PtaxLine({ fx }: { fx: PortfolioState["transactions"][number]["fx"] }) 
 
 function TransactionForm({
   ticker,
+  assetType,
   assetCurrency,
   assetTargetDays,
   trades,
   quote,
+  quoteKind,
   portfolio,
 }: {
   ticker: string;
+  assetType: AssetType;
   assetCurrency: CurrencyCode;
   assetTargetDays: number | null;
   /** The asset's trades (in its currency), to list the tranches open on the sale date. */
   trades: Array<TrancheTrade & { id?: number }>;
   /** Current quote, in the asset's currency (offered when the price is left blank). */
   quote: number;
+  /** Where the quote comes from: the market, the latest valuation, the average cost, or cash (1). */
+  quoteKind: "market" | "valuation" | "cost" | "cash";
   portfolio: PortfolioState;
 }) {
+  const isCash = assetType === "cash";
   const [type, setType] = useState<TransactionType>("BUY");
   const [targetText, setTargetText] = useState("");
   const [choose, setChoose] = useState(false);
@@ -491,6 +747,8 @@ function TransactionForm({
   const targetId = useId();
   const [currency, setCurrency] = useState<CurrencyCode>(assetCurrency);
   const currencyId = useId();
+  // Cash in its own currency: each unit is worth 1, there is no price to type.
+  const fixedPrice = isCash && currency === assetCurrency;
   const [shares, setShares] = useState("");
   const [price, setPrice] = useState("");
   const [date, setDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
@@ -500,7 +758,7 @@ function TransactionForm({
     [trades, date, assetTargetDays]
   );
   // Choosing tranches: the quantity sold IS the sum of what was chosen (exact decimals).
-  const choosing = type === "SELL" && choose;
+  const choosing = type === "SELL" && choose && !isCash;
   const { picks, sum: pickedSum, total: pickedTotal } = evaluatePicks(openTranches, picked);
   const effectiveShares = choosing ? pickedTotal : shares;
   const [error, setError] = useState<string | null>(null);
@@ -532,7 +790,7 @@ function TransactionForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await register(price);
+    await register(fixedPrice ? "1" : price);
   };
 
   const register = async (priceValue: string) => {
@@ -543,7 +801,7 @@ function TransactionForm({
     }
     setAskPrice(false);
 
-    const targetDays = type === "BUY" && targetText.trim() ? Number(targetText) : undefined;
+    const targetDays = type === "BUY" && !isCash && targetText.trim() ? Number(targetText) : undefined;
     let lots: LotChoice[] | undefined;
     if (choosing) {
       const bad = picks.find((p) => p.invalid || p.over);
@@ -598,19 +856,19 @@ function TransactionForm({
                 type === t ? (t === "BUY" ? "bg-tv-up text-white" : "bg-tv-down text-white") : "text-tv-text/40"
               )}
             >
-              {t === "BUY" ? "COMPRA" : "VENDA"}
+              {isCash ? (t === "BUY" ? "DEPÓSITO" : "SAQUE") : t === "BUY" ? "COMPRA" : "VENDA"}
             </button>
           ))}
         </div>
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
-            <FieldLabel htmlFor={sharesId}>Quantidade</FieldLabel>
+            <FieldLabel htmlFor={sharesId}>{isCash ? `Valor (${assetCurrency})` : "Quantidade"}</FieldLabel>
             <input
               id={sharesId}
               type="text"
               inputMode="decimal"
-              placeholder={choosing ? "soma das tranches" : "ex: 10 ou 0.5"}
+              placeholder={choosing ? "soma das tranches" : isCash ? "ex: 5000" : "ex: 10 ou 0.5"}
               className={cn("tv-input w-full", choosing && "opacity-70 cursor-not-allowed")}
               value={effectiveShares}
               readOnly={choosing}
@@ -620,13 +878,21 @@ function TransactionForm({
               required={!choosing}
             />
           </div>
+          {fixedPrice ? (
+            <div className="space-y-1">
+              <span className="block text-[10px] uppercase text-tv-text/40 font-bold">Preço</span>
+              <p className="text-xs text-tv-text/50 pt-2">1 {assetCurrency} = 1 {assetCurrency}: o valor vai inteiro no campo ao lado.</p>
+            </div>
+          ) : (
           <div className="space-y-1">
-            <FieldLabel htmlFor={priceId}>Preço ({currency})</FieldLabel>
+            <FieldLabel htmlFor={priceId}>
+              {isCash ? `Câmbio pago (${currency}/${assetCurrency})` : assetType === "illiquid" ? `Preço unitário (${currency})` : `Preço (${currency})`}
+            </FieldLabel>
             <input
               id={priceId}
               type="text"
               inputMode="decimal"
-              placeholder="ex: 162.85"
+              placeholder={isCash ? "ex: 5.40" : assetType === "illiquid" ? "ex: 850000" : "ex: 162.85"}
               className="tv-input w-full"
               ref={priceRef}
               value={price}
@@ -634,17 +900,26 @@ function TransactionForm({
               onChange={(e) => setPrice(e.target.value.replace(",", "."))}
             />
           </div>
+          )}
         </div>
 
         {askPrice && (
           <div role="alert" className="rounded border border-amber-400/40 bg-amber-400/10 p-3 text-xs space-y-2">
             <p className="text-tv-text/90">
               {suggestion
-                ? `Sem preço. Usar a cotação de agora${suggestion.converted ? `, convertida para ${currency} pelo câmbio de hoje` : ""}?`
-                : "Sem preço, e sem cotação agora para sugerir: digite o preço."}
+                ? isCash
+                  ? `Sem câmbio. Usar o câmbio de agora (${currency} por 1 ${assetCurrency})?`
+                  : quoteKind === "valuation"
+                    ? `Sem preço. Usar o valor da última avaliação${suggestion.converted ? `, convertido para ${currency} pelo câmbio de hoje` : ""}?`
+                    : quoteKind === "cost"
+                      ? `Sem preço, e o ativo ainda não tem avaliação. Usar o preço médio${suggestion.converted ? `, convertido para ${currency} pelo câmbio de hoje` : ""}?`
+                      : `Sem preço. Usar a cotação de agora${suggestion.converted ? `, convertida para ${currency} pelo câmbio de hoje` : ""}?`
+                : isCash
+                  ? "Sem câmbio, e sem câmbio de agora para sugerir: digite o câmbio pago."
+                  : "Sem preço, e sem cotação agora para sugerir: digite o preço."}
               {suggestion && date !== localToday() && (
                 <span className="block text-amber-400">
-                  Atenção: é a cotação de hoje, não a de {date.split("-").reverse().join("/")}.
+                  Atenção: é o valor de hoje, não o de {date.split("-").reverse().join("/")}.
                 </span>
               )}
             </p>
@@ -700,7 +975,7 @@ function TransactionForm({
             </select>
           </div>
         </div>
-        {type === "BUY" && (
+        {type === "BUY" && !isCash && (
           <div className="space-y-1">
             <FieldLabel htmlFor={targetId}>Prazo-alvo desta tranche (dias)</FieldLabel>
             <input
@@ -715,7 +990,7 @@ function TransactionForm({
           </div>
         )}
 
-        {type === "SELL" && (
+        {type === "SELL" && !isCash && (
           <fieldset className="space-y-2">
             <legend className="text-[10px] uppercase text-tv-text/40 font-bold">De quais tranches sai</legend>
             <div className="flex gap-4 text-sm">

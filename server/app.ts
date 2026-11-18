@@ -8,15 +8,16 @@ import type { AppConfig } from "./config";
 import { CandleError, createCandleService, defaultMassiveFetch, providerUrls, type AlpacaKeys, type MassiveFetch } from "./candles";
 import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
 import { coinbaseUsdAssets, coinbaseLiveRates, type CryptoAsset } from "./providers/coinbase";
-import { STOCK_COLUMNS, TX_COLUMNS, createTxOut } from "./columns";
+import { STOCK_COLUMNS, TX_COLUMNS, createStockOut, createTxOut } from "./columns";
 import { defaultTargetDays, replayTranches, type LotChoice, type TrancheTrade } from "../shared/tranches";
 import { createPtax } from "./ptax";
 import { isCurrency, parseFxSnapshot, quoteCurrencyOf, type CurrencyCode, type FxSnapshot } from "../shared/currencies";
-import { defaultClassification, horizonOfDays, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Classification, type Horizon } from "../shared/classification";
+import { CUSTODY_IDS, defaultClassification, horizonOfDays, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Classification, type Horizon } from "../shared/classification";
+import { VALUATIONS_PER_ACCOUNT_MAX, VALUATIONS_PER_ASSET_MAX } from "../shared/manualAssets";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_PORTFOLIO, type DB } from "./db";
-import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, CRYPTO_TICKER_RE, type AssetType } from "../shared/assetTypes";
+import { assetTypeOfTicker, displaySymbol, finnhubQuoteSymbol, isCryptoTicker, isManualTicker, isManualType, CRYPTO_TICKER_RE, MANUAL_PREFIX, type AssetType, type ManualAssetType } from "../shared/assetTypes";
 import { parsePositiveDecimal } from "../shared/decimal";
 import { APP_NAME } from "../shared/brand";
 import { HttpError, nowIso, parseBody, wrap } from "./http";
@@ -32,6 +33,9 @@ import {
   massiveKeySchema,
   registerSchema,
   stockSchema,
+  manualStockSchema,
+  stockRenameSchema,
+  valuationSchema,
   portfolioCreateSchema,
   tabCreateSchema,
   tabReorderSchema,
@@ -151,10 +155,10 @@ export function createApp(
     getStocks: db.prepare(
       `SELECT ${STOCK_COLUMNS} FROM stocks WHERE user_id = ? AND portfolio_id = ? ORDER BY ticker ASC`
     ),
-    getStock: db.prepare(`SELECT id, currency FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
+    getStock: db.prepare(`SELECT id, currency, asset_type FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
     insertStock: db.prepare(
-      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency, target_days)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency, target_days, custody)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
 
     getTabs: db.prepare(
@@ -207,6 +211,10 @@ export function createApp(
     exportTx: db.prepare(
       `SELECT ${TX_COLUMNS}, portfolio_id
        FROM transactions WHERE user_id = ? ORDER BY portfolio_id, date DESC, sort_order DESC, id DESC`
+    ),
+    exportValuations: db.prepare(
+      `SELECT s.portfolio_id, s.ticker, v.date, v.price, v.note FROM valuations v JOIN stocks s ON s.id = v.stock_id
+       WHERE s.user_id = ? ORDER BY s.portfolio_id, s.ticker, v.date`
     ),
     deleteAllPortfolios: db.prepare(`DELETE FROM portfolios WHERE user_id = ?`),
     insertPortfolioFromBackup: db.prepare(
@@ -294,6 +302,9 @@ export function createApp(
 
   // Trades as the API returns them (PTAX parsed, chosen tranches on SELLs).
   const txOut = createTxOut(db);
+  // Assets as the API returns them (an illiquid one with its valuations).
+  const stockOut = createStockOut(db);
+  type StockRow = { id: number; asset_type?: string };
   const lotsOfAsset = db.prepare(
     `SELECT l.sell_id, l.buy_id, l.shares FROM sell_lots l JOIN transactions s ON s.id = l.sell_id
      WHERE s.user_id = ? AND s.portfolio_id = ? AND s.ticker = ?`
@@ -326,17 +337,42 @@ export function createApp(
     return has.find((e) => !had.includes(e)) ?? has[has.length - 1];
   }
 
-  /** Inserts an asset with its classification and quote currency. */
+  /**
+   * Inserts an asset with its classification and currency: a market asset is in
+   * the currency it is quoted in; an illiquid asset or cash account in the one
+   * the user chose.
+   */
   function insertStock(
     userId: number,
     portfolioId: number,
-    s: { ticker: string; name: string; createdAt: string; assetType: AssetType; tabId: number | null; classification: Classification; targetDays?: number | null }
+    s: {
+      ticker: string;
+      name: string;
+      createdAt: string;
+      assetType: AssetType;
+      tabId: number | null;
+      classification: Classification;
+      targetDays?: number | null;
+      currency?: CurrencyCode;
+    }
   ) {
     const c = s.classification;
+    const currency = isManualType(s.assetType) && s.currency ? s.currency : quoteCurrencyOf(s.assetType);
     return q.insertStock.run(
       userId, portfolioId, s.ticker, s.name, s.createdAt, s.assetType, s.tabId,
-      c.liquidity, c.horizon, c.jurisdiction, quoteCurrencyOf(s.assetType), s.targetDays ?? defaultTargetDays(c.horizon)
+      c.liquidity, c.horizon, c.jurisdiction, currency, s.targetDays ?? defaultTargetDays(c.horizon), c.custody
     );
+  }
+
+  /** A new internal identity for an illiquid asset or cash account (I:/C: + 10 letters or digits). */
+  const ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  function newManualTicker(type: ManualAssetType, taken: (ticker: string) => boolean) {
+    for (;;) {
+      let id = "";
+      for (let i = 0; i < 10; i++) id += ID_CHARS[crypto.randomInt(ID_CHARS.length)];
+      const ticker = MANUAL_PREFIX[type] + id;
+      if (!taken(ticker)) return ticker;
+    }
   }
 
   /** Classification from a backup row: each valid field kept, anything else gets the default of the type. */
@@ -352,6 +388,7 @@ export function createApp(
       liquidity: pick("liquidity", LIQUIDITY_IDS, d.liquidity, false) ?? d.liquidity,
       horizon: pick("horizon", HORIZON_IDS, d.horizon, true),
       jurisdiction: pick("jurisdiction", JURISDICTION_IDS, d.jurisdiction, true),
+      custody: pick("custody", CUSTODY_IDS, d.custody, true),
     };
   }
 
@@ -636,9 +673,11 @@ export function createApp(
     return { count: result.length, result };
   }
 
+  /** A symbol with a market quote (illiquid assets and cash have none). */
   function parseSymbol(value: unknown) {
     const symbol = normalizeTicker(value);
     if (!isValidTicker(symbol)) throw new HttpError(400, "Invalid symbol");
+    if (isManualTicker(symbol)) throw new HttpError(400, "Este ativo não tem cotação de mercado");
     return symbol;
   }
 
@@ -910,13 +949,16 @@ export function createApp(
   // Assets of the active portfolio
   // ---------------------------------------------------------------------------
   app.get("/api/stocks", requireAuth, requirePortfolio, (_req, res) => {
-    res.json(q.getStocks.all(currentUser(res).id, currentPortfolio(res)));
+    const user = currentUser(res);
+    res.json(stockOut(q.getStocks.all(user.id, currentPortfolio(res)) as StockRow[], user.id));
   });
 
   app.post("/api/stocks", requireAuth, requirePortfolio, (req, res) => {
     const user = currentUser(res);
     const pf = currentPortfolio(res);
     const { ticker, name, tabId } = parseBody(stockSchema, req.body);
+    // Illiquid assets and cash accounts get their identity from the server (POST /api/stocks/manual).
+    if (isManualTicker(ticker)) throw new HttpError(400, "Ativo ilíquido ou caixa: use o cadastro pelo nome");
     const tab = q.getTab.get(user.id, pf, tabId) as { id: number; asset_type: string } | undefined;
     if (!tab) throw new HttpError(404, "Aba não encontrada");
     const assetType = assetTypeOfTicker(ticker);
@@ -933,13 +975,45 @@ export function createApp(
     res.status(201).json({ ticker, name, assetType, tabId: tab.id, ...classification, currency: quoteCurrencyOf(assetType) });
   });
 
-  // Classification of one asset (liquidity, horizon, jurisdiction): only the fields sent change.
+  /** An illiquid asset or a cash account: named by the user, in the currency the user chose. */
+  app.post("/api/stocks/manual", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const { name, tabId, currency } = parseBody(manualStockSchema, req.body);
+    const tab = q.getTab.get(user.id, pf, tabId) as { id: number; asset_type: string } | undefined;
+    if (!tab) throw new HttpError(404, "Aba não encontrada");
+    const assetType = tab.asset_type as AssetType;
+    if (!isManualType(assetType)) throw new HttpError(400, "Nesta aba os ativos vêm da busca");
+    if ((q.countUserStocks.get(user.id) as { n: number }).n >= LIMITS.importStocksMax) {
+      throw new HttpError(400, `Limite de ${LIMITS.importStocksMax} ativos na conta (somando todas as carteiras)`);
+    }
+    const ticker = newManualTicker(assetType, (t) => !!q.getStock.get(user.id, pf, t));
+    const classification = defaultClassification(assetType);
+    insertStock(user.id, pf, { ticker, name, createdAt: nowIso(), assetType, tabId: tab.id, classification, currency });
+    res.status(201).json(stockOut([getOneStock.get(user.id, pf, ticker) as StockRow], user.id)[0]);
+  });
+
+  /** Renames an illiquid asset or cash account (a market asset keeps the name of its symbol). */
+  const renameStock = db.prepare(`UPDATE stocks SET name = ? WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`);
+  app.patch("/api/stocks/:ticker", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const ticker = normalizeTicker(req.params.ticker);
+    if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
+    const { name } = parseBody(stockRenameSchema, req.body);
+    if (!isManualTicker(ticker)) throw new HttpError(400, "Só ativos ilíquidos e caixas mudam de nome");
+    if (renameStock.run(name, user.id, pf, ticker).changes === 0) throw new HttpError(404, "Ativo não encontrado");
+    res.json(stockOut([getOneStock.get(user.id, pf, ticker) as StockRow], user.id)[0]);
+  });
+
+  // Classification of one asset (liquidity, horizon, jurisdiction, custody): only the fields sent change.
   const classifyStmt = (where: string) =>
     db.prepare(
       `UPDATE stocks SET
          liquidity = CASE WHEN @setLiquidity THEN @liquidity ELSE liquidity END,
          horizon = CASE WHEN @setHorizon THEN @horizon ELSE horizon END,
          jurisdiction = CASE WHEN @setJurisdiction THEN @jurisdiction ELSE jurisdiction END,
+         custody = CASE WHEN @setCustody THEN @custody ELSE custody END,
          target_days = CASE WHEN @setHorizon THEN @targetDays ELSE target_days END
        WHERE user_id = @userId AND portfolio_id = @portfolioId AND ${where}`
     );
@@ -971,6 +1045,8 @@ export function createApp(
       targetDays: thesis?.targetDays ?? null,
       setJurisdiction: c.jurisdiction !== undefined ? 1 : 0,
       jurisdiction: c.jurisdiction ?? null,
+      setCustody: c.custody !== undefined ? 1 : 0,
+      custody: c.custody ?? null,
     };
   };
   const getOneStock = db.prepare(`SELECT ${STOCK_COLUMNS} FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`);
@@ -983,7 +1059,77 @@ export function createApp(
     const changes = parseBody(classificationSchema, req.body);
     const info = classifyOne.run({ ...classifyParams(changes), userId: user.id, portfolioId: pf, ticker });
     if (info.changes === 0) throw new HttpError(404, "Ativo não encontrado");
-    res.json(getOneStock.get(user.id, pf, ticker));
+    res.json(stockOut([getOneStock.get(user.id, pf, ticker) as StockRow], user.id)[0]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Valuations of illiquid assets (dated, price of one unit in the asset's currency)
+  // ---------------------------------------------------------------------------
+  const valuationStmts = {
+    ofStock: db.prepare(`SELECT id, date, price, note FROM valuations WHERE stock_id = ? ORDER BY date, id`),
+    count: db.prepare(`SELECT COUNT(*) AS n FROM valuations WHERE stock_id = ?`),
+    countOfUser: db.prepare(`SELECT COUNT(*) AS n FROM valuations v JOIN stocks s ON s.id = v.stock_id WHERE s.user_id = ?`),
+    insert: db.prepare(`INSERT INTO valuations (stock_id, date, price, note, created_at) VALUES (?, ?, ?, ?, ?)`),
+    // Always through the asset: a valuation of another user or portfolio is never found.
+    owned: db.prepare(
+      `SELECT v.id, v.stock_id FROM valuations v JOIN stocks s ON s.id = v.stock_id
+       WHERE v.id = ? AND s.user_id = ? AND s.portfolio_id = ?`
+    ),
+    update: db.prepare(`UPDATE valuations SET date = ?, price = ?, note = ? WHERE id = ?`),
+    remove: db.prepare(`DELETE FROM valuations WHERE id = ?`),
+    sameDate: db.prepare(`SELECT id FROM valuations WHERE stock_id = ? AND date = ? AND id != ?`),
+  };
+  const brDate = (iso: string) => iso.split("-").reverse().join("/");
+
+  app.post("/api/stocks/:ticker/valuations", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const ticker = normalizeTicker(req.params.ticker);
+    if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
+    const v = parseBody(valuationSchema, req.body);
+    const stock = q.getStock.get(user.id, pf, ticker) as { id: number; asset_type: string } | undefined;
+    if (!stock) throw new HttpError(404, "Ativo não encontrado");
+    if (stock.asset_type !== "illiquid") throw new HttpError(400, "Só ativos ilíquidos têm avaliação manual");
+    db.transaction(() => {
+      if ((valuationStmts.count.get(stock.id) as { n: number }).n >= VALUATIONS_PER_ASSET_MAX) {
+        throw new HttpError(400, `Limite de ${VALUATIONS_PER_ASSET_MAX} avaliações por ativo`);
+      }
+      if ((valuationStmts.countOfUser.get(user.id) as { n: number }).n >= VALUATIONS_PER_ACCOUNT_MAX) {
+        throw new HttpError(400, `Limite de ${VALUATIONS_PER_ACCOUNT_MAX} avaliações na conta (somando todas as carteiras)`);
+      }
+      if (valuationStmts.sameDate.get(stock.id, v.date, 0)) {
+        throw new HttpError(409, `Já existe uma avaliação em ${brDate(v.date)}. Edite essa ou apague antes.`);
+      }
+      valuationStmts.insert.run(stock.id, v.date, v.price, v.note, nowIso());
+    })();
+    res.status(201).json(valuationStmts.ofStock.all(stock.id));
+  });
+
+  app.patch("/api/valuations/:id", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Invalid id");
+    const v = parseBody(valuationSchema, req.body);
+    const found = valuationStmts.owned.get(id, user.id, pf) as { id: number; stock_id: number } | undefined;
+    if (!found) throw new HttpError(404, "Avaliação não encontrada");
+    db.transaction(() => {
+      if (valuationStmts.sameDate.get(found.stock_id, v.date, id)) {
+        throw new HttpError(409, `Já existe outra avaliação em ${brDate(v.date)}.`);
+      }
+      valuationStmts.update.run(v.date, v.price, v.note, id);
+    })();
+    res.json(valuationStmts.ofStock.all(found.stock_id));
+  });
+
+  app.delete("/api/valuations/:id", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Invalid id");
+    const found = valuationStmts.owned.get(id, user.id, pf) as { id: number } | undefined;
+    if (found) valuationStmts.remove.run(id); // not found or not yours: idempotent 204, reveals nothing
+    res.status(204).send();
   });
 
   /** Same classification for every asset of a tab ("Aplicar a todos os ativos desta aba"). */
@@ -1111,11 +1257,13 @@ export function createApp(
     const tx = parseBody(transactionSchema, req.body);
     const { ticker, type, shares, date } = tx;
     const checkAsset = () => {
-      const stock = q.getStock.get(user.id, pf, ticker) as { id: number; currency: string } | undefined;
+      const stock = q.getStock.get(user.id, pf, ticker) as { id: number; currency: string; asset_type: string } | undefined;
       if (!stock) throw new HttpError(400, "Ticker not found in portfolio. Add the stock first.");
       if ((q.countUserTx.get(user.id) as { n: number }).n >= LIMITS.importTransactionsMax) {
         throw new HttpError(400, `Limite de ${LIMITS.importTransactionsMax} operações na conta (somando todas as carteiras)`);
       }
+      const problem = cashPriceProblem(stock, tx.currency, tx.price);
+      if (problem) throw new HttpError(400, problem);
       return stock;
     };
     // Fail fast, before asking the Banco Central (checked again below, atomically).
@@ -1190,6 +1338,17 @@ export function createApp(
     res.status(204).send();
   });
 
+  /**
+   * Cash: one unit is 1 of the account's currency, so a deposit or withdrawal in
+   * that currency has price 1 (the amount goes in the quantity). Paid in another
+   * currency, the price is the exchange rate paid (e.g. R$ 5.40 per US$ 1).
+   */
+  function cashPriceProblem(stock: { asset_type: string; currency: string }, paid: string | undefined, price: string) {
+    if (stock.asset_type !== "cash") return null;
+    if ((paid ?? stock.currency) !== stock.currency) return null;
+    return price === "1" ? null : "Caixa na própria moeda: cada unidade vale 1 (o valor vai na quantidade)";
+  }
+
   /** A tranche's own target (BUY), or null to follow the asset's thesis again. */
   const setTrancheTarget = db.prepare(
     `UPDATE transactions SET target_days = ? WHERE user_id = ? AND portfolio_id = ? AND id = ? AND type = 'BUY'`
@@ -1230,6 +1389,7 @@ export function createApp(
       tabs: q.exportTabs.all(user.id),
       stocks: q.exportStocks.all(user.id),
       transactions: txOut(q.exportTx.all(user.id) as TxRow[], user.id),
+      valuations: q.exportValuations.all(user.id),
     });
   });
 
@@ -1240,6 +1400,7 @@ export function createApp(
     const backupSettings = backup.settings ?? {};
     const stocks: any[] = Array.isArray(backup.stocks) ? backup.stocks : [];
     const transactions: any[] = Array.isArray(backup.transactions) ? backup.transactions : [];
+    const valuations: any[] = Array.isArray(backup.valuations) ? backup.valuations : [];
 
     if (normalizeEmail(backupUser.email) === "") {
       throw new HttpError(400, "Backup inválido: usuário do backup não informado");
@@ -1257,7 +1418,11 @@ export function createApp(
       }
       await checkPassword(user, confirmPassword);
     }
-    if (stocks.length > LIMITS.importStocksMax || transactions.length > LIMITS.importTransactionsMax) {
+    if (
+      stocks.length > LIMITS.importStocksMax ||
+      transactions.length > LIMITS.importTransactionsMax ||
+      valuations.length > VALUATIONS_PER_ACCOUNT_MAX
+    ) {
       throw new HttpError(400, "Backup too large");
     }
 
@@ -1351,7 +1516,7 @@ export function createApp(
         tabIdMap.set(Number(t.id), { id: newId, assetType: parsed.data.assetType, portfolioId });
       }
 
-      const knownAssets = new Set<string>(); // `${portfolioId}:${ticker}`
+      const knownAssets = new Map<string, { assetType: AssetType; currency: string }>(); // `${portfolioId}:${ticker}`
       for (const st of stocks) {
         const ticker = normalizeTicker(st?.ticker);
         const name = shortText(st?.name, LIMITS.stockNameMax);
@@ -1365,6 +1530,8 @@ export function createApp(
         // null: default tab below. A tab of another portfolio or type is never used.
         const tabId = mapped && mapped.assetType === assetType && mapped.portfolioId === portfolioId ? mapped.id : null;
         const classification = classificationFromBackup(st, assetType);
+        // An illiquid asset or cash account keeps its currency (any other value: real).
+        const currency: CurrencyCode = isManualType(assetType) ? (isCurrency(st?.currency) ? st.currency : "BRL") : quoteCurrencyOf(assetType);
         const rawTarget = Number(st?.target_days);
         const backupTarget = Number.isSafeInteger(rawTarget) && rawTarget >= 1 && rawTarget <= 36500 ? rawTarget : null;
         insertStock(user.id, portfolioId, {
@@ -1376,8 +1543,9 @@ export function createApp(
           classification,
           // the backup's target only if it agrees with the horizon; else the horizon's default
           targetDays: backupTarget !== null && horizonOfDays(backupTarget) === classification.horizon ? backupTarget : null,
+          currency,
         });
-        knownAssets.add(`${portfolioId}:${ticker}`);
+        knownAssets.set(`${portfolioId}:${ticker}`, { assetType, currency });
       }
 
       const imported = new Map<number, PositionTx[]>(); // per portfolio
@@ -1397,7 +1565,8 @@ export function createApp(
           ...(tr?.currency !== undefined && tr?.currency !== null ? { currency: tr.currency } : {}),
         });
         const portfolioId = portfolioOf(tr);
-        if (!parsed.success || !knownAssets.has(`${portfolioId}:${parsed.data.ticker}`)) {
+        const asset = parsed.success ? knownAssets.get(`${portfolioId}:${parsed.data.ticker}`) : undefined;
+        if (!parsed.success || !asset || cashPriceProblem({ asset_type: asset.assetType, currency: asset.currency }, parsed.data.currency, parsed.data.price)) {
           skipped++;
           continue;
         }
@@ -1407,7 +1576,7 @@ export function createApp(
 
         // Currency and PTAX of the backup are kept when coherent (rates in range, bulletin
         // on or up to 15 days before the trade); anything else is fetched again from the BCB.
-        const currency = tx.currency ?? quoteCurrencyOf(assetTypeOfTicker(tx.ticker));
+        const currency = tx.currency ?? (isCurrency(asset.currency) ? asset.currency : quoteCurrencyOf(asset.assetType));
         const fxIn = parseFxSnapshot(tr?.fx);
         const fx = fxIn && fxIn.date <= tx.date && fxIn.date >= addIsoDays(tx.date, -15) ? fxIn : null;
         const target = Number(tr?.target_days);
@@ -1473,6 +1642,24 @@ export function createApp(
         }
       }
 
+      // Valuations of illiquid assets of the backup (one per date; anything else skipped).
+      const stockIdOf = db.prepare(`SELECT id FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`);
+      const perAsset = new Map<number, number>();
+      for (const v of valuations) {
+        const portfolioId = portfolioOf(v);
+        const ticker = normalizeTicker(v?.ticker);
+        const parsed = valuationSchema.safeParse({ date: v?.date, price: v?.price, note: typeof v?.note === "string" ? v.note : "" });
+        const asset = knownAssets.get(`${portfolioId}:${ticker}`);
+        const stock = asset?.assetType === "illiquid" ? (stockIdOf.get(user.id, portfolioId, ticker) as { id: number } | undefined) : undefined;
+        const count = stock ? perAsset.get(stock.id) ?? 0 : 0;
+        if (!parsed.success || !stock || count >= VALUATIONS_PER_ASSET_MAX || valuationStmts.sameDate.get(stock.id, parsed.data.date, 0)) {
+          skipped++;
+          continue;
+        }
+        valuationStmts.insert.run(stock.id, parsed.data.date, parsed.data.price, parsed.data.note, nowIso());
+        perAsset.set(stock.id, count + 1);
+      }
+
       // Assets without a valid tab (old backups) go to a default tab of their type.
       ensureDefaultTabs(db);
     })();
@@ -1488,7 +1675,7 @@ export function createApp(
         const first = portfolios.list(user.id).find((p) => !p.archived)!;
         return {
           tabs: (q.getTabs.all(user.id, first.id) as TabRow[]).map(tabDto),
-          stocks: q.getStocks.all(user.id, first.id),
+          stocks: stockOut(q.getStocks.all(user.id, first.id) as StockRow[], user.id),
           transactions: txOut(q.getTxDesc.all(user.id, first.id) as TxRow[], user.id),
         };
       })(),
@@ -1547,7 +1734,9 @@ export function createApp(
         throw new HttpError(400, `Too many symbols (max ${LIMITS.symbolsPerRequest})`);
       }
 
-      const symbols = [...new Set(parts.map(parseSymbol))];
+      // Assets without a market quote (illiquid, cash) are simply left out.
+      const symbols = [...new Set(parts.filter((p) => !isManualTicker(normalizeTicker(p))).map(parseSymbol))];
+      if (symbols.length === 0) return res.json({});
       const key = requireFinnhubKey(currentUser(res));
 
       const massiveKey = currentUser(res).massive_key;

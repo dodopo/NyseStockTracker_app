@@ -5,7 +5,7 @@
 import type { DB } from "./db";
 import { parseFxSnapshot } from "../shared/currencies";
 
-export const STOCK_COLUMNS = `id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency, target_days`;
+export const STOCK_COLUMNS = `id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency, target_days, custody`;
 
 // Canonical decimal strings come from the *_dec columns (exact); REAL columns are legacy.
 export const TX_COLUMNS = `id, ticker, type, shares_dec AS shares, price_dec AS price, date, created_at, sort_order, currency, fx, target_days`;
@@ -29,5 +29,29 @@ export function createTxOut(db: DB) {
       bySell.set(l.sell_id, list);
     }
     return rows.map((r) => ({ ...r, fx: parseFxSnapshot(r.fx), lots: r.type === "SELL" ? bySell.get(r.id) ?? null : null }));
+  };
+}
+
+export type ValuationOut = { id: number; date: string; price: string; note: string };
+
+/**
+ * Assets as returned: an illiquid asset carries its valuations (oldest first),
+ * so every screen values it the same way; other assets carry none.
+ */
+export function createStockOut(db: DB) {
+  const valuationsOfUser = db.prepare(
+    `SELECT v.id, v.stock_id, v.date, v.price, v.note FROM valuations v JOIN stocks s ON s.id = v.stock_id
+     WHERE s.user_id = ? ORDER BY v.stock_id, v.date, v.id`
+  );
+  return function stockOut<T extends { id: number; asset_type?: string }>(rows: T[], userId: number) {
+    const byStock = new Map<number, ValuationOut[]>();
+    if (rows.some((r) => r.asset_type === "illiquid")) {
+      for (const v of valuationsOfUser.all(userId) as Array<ValuationOut & { stock_id: number }>) {
+        const list = byStock.get(v.stock_id) ?? [];
+        list.push({ id: v.id, date: v.date, price: v.price, note: v.note });
+        byStock.set(v.stock_id, list);
+      }
+    }
+    return rows.map((r) => (r.asset_type === "illiquid" ? { ...r, valuations: byStock.get(r.id) ?? [] } : r));
   };
 }

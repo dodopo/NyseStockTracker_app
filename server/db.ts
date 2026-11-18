@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { decimalFromLegacyNumber } from "../shared/decimal";
+import { DEFAULT_TAB_OF, isAssetType } from "../shared/assetTypes";
 
 export type DB = Database.Database;
 
@@ -430,6 +431,62 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // v10 = v0.16.0 illiquid assets and cash, and custody.
+    // - tabs: the CHECK of asset_type now accepts 'illiquid' and 'cash'. SQLite
+    //   cannot change a CHECK in place, so only this small table is rebuilt (ids,
+    //   order and the id counter kept; stocks.tab_id keeps pointing to them).
+    // - stocks.custody: who holds the asset (institution | self | null = not
+    //   defined). Existing US stocks are at a broker: 'institution'.
+    // - valuations: dated valuations of illiquid assets (price of one unit, in the
+    //   asset's currency), one per date, deleted with the asset.
+    // An older version still opens this database but does not know the new types:
+    // going back means restoring the backup, which dodopoam-update does by itself.
+    // Values written out here on purpose (a migration never changes).
+    version: 10,
+    rebuild: true,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE tabs_v10 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          portfolio_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          asset_type TEXT NOT NULL CHECK(asset_type IN ('us_stock', 'crypto', 'illiquid', 'cash')),
+          color TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
+        );
+        INSERT INTO tabs_v10 (id, user_id, portfolio_id, name, asset_type, color, sort_order, created_at)
+          SELECT id, user_id, portfolio_id, name, asset_type, color, sort_order, created_at FROM tabs;
+      `);
+      const columns = `id, user_id, portfolio_id, name, asset_type, color, sort_order, created_at`;
+      assertSameRows(db, "tabs", `SELECT ${columns} FROM tabs`, `SELECT ${columns} FROM tabs_v10`);
+      const seq = sequenceOf(db, "tabs");
+      db.exec(`
+        DROP TABLE tabs;
+        ALTER TABLE tabs_v10 RENAME TO tabs;
+        CREATE INDEX idx_tabs_portfolio ON tabs(portfolio_id, sort_order);
+
+        ALTER TABLE stocks ADD COLUMN custody TEXT
+          CHECK (custody IS NULL OR custody IN ('institution', 'self'));
+        UPDATE stocks SET custody = 'institution' WHERE asset_type = 'us_stock' AND ticker NOT LIKE 'X:%';
+
+        CREATE TABLE valuations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          stock_id INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+          date TEXT NOT NULL,
+          price TEXT NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          UNIQUE (stock_id, date)
+        );
+      `);
+      db.prepare(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'tabs'`).run(seq);
+    },
+  },
 ];
 
 export const DEFAULT_TAB = { name: "Ações", assetType: "us_stock", color: "#2962ff" } as const;
@@ -484,19 +541,9 @@ export function ensureDefaultTabs(db: DB) {
   const tabFor = (userId: number, portfolioId: number, assetType: string) => {
     const found = findTab.get(portfolioId, assetType) as { id: number } | undefined;
     if (found) return found.id;
-    const isCrypto = assetType === "crypto";
+    const tab = DEFAULT_TAB_OF[isAssetType(assetType) ? assetType : "us_stock"];
     const order = (nextOrder.get(portfolioId) as { n: number }).n;
-    return Number(
-      insertTab.run(
-        userId,
-        portfolioId,
-        isCrypto ? "Cripto" : DEFAULT_TAB.name,
-        assetType,
-        isCrypto ? "#f7931a" : DEFAULT_TAB.color,
-        order,
-        now
-      ).lastInsertRowid
-    );
+    return Number(insertTab.run(userId, portfolioId, tab.name, assetType, tab.color, order, now).lastInsertRowid);
   };
 
   let changed = 0;
