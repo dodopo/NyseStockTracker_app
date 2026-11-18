@@ -409,3 +409,24 @@ describe("venda escolhendo tranches: quantidade = soma das escolhas", () => {
     expect(evaluatePicks(open, { 99: "5", 3: "1" }).total).toBe("1");
   });
 });
+
+import { suggestPrice } from "../src/features/actions/priceSuggestion";
+
+describe("preço em branco: sugestão pela cotação atual", () => {
+  it("na moeda do ativo: a cotação, com até 8 casas", () => {
+    expect(suggestPrice({ quote: 63495.88, assetCurrency: "USD", tradeCurrency: "USD" })).toEqual({ value: "63495.88", converted: false });
+    expect(suggestPrice({ quote: 0.123456789, assetCurrency: "USD", tradeCurrency: "USD" })).toEqual({ value: "0.12345679", converted: false });
+  });
+
+  it("pago em outra moeda: convertida pelo câmbio de hoje (reais por unidade)", () => {
+    const live = { USD: "5.8", EUR: "6.4", CHF: "6.9" };
+    expect(suggestPrice({ quote: 100, assetCurrency: "USD", tradeCurrency: "BRL", live })).toEqual({ value: "580", converted: true });
+    expect(suggestPrice({ quote: 64, assetCurrency: "USD", tradeCurrency: "EUR", live })).toEqual({ value: "58", converted: true });
+  });
+
+  it("sem cotação, ou sem câmbio para converter: não sugere", () => {
+    expect(suggestPrice({ quote: 0, assetCurrency: "USD", tradeCurrency: "USD" })).toBeNull();
+    expect(suggestPrice({ quote: undefined, assetCurrency: "USD", tradeCurrency: "USD" })).toBeNull();
+    expect(suggestPrice({ quote: 100, assetCurrency: "USD", tradeCurrency: "BRL", live: null })).toBeNull();
+  });
+});

@@ -16,6 +16,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.15.2] - 2026-11-18
+
+No database change; updating is enough.
+
+### Fixed
+- Sale with "Escolher tranches": a tranche with more than it has open was flagged but did NOT turn red on screen (the field's own style overrode the red). Invalid fields now turn red through `aria-invalid` (the same flag screen readers use), focused or not, and the tooltip says how much the tranche has.
+- The trade form's error message stayed on screen after you changed the form (switching to COMPRA, back to "Mais antigas primeiro", fixing the quantity), warning about a problem that no longer existed. Any change to the form now clears it.
+
+### Added
+- **Blank price → current quote.** Registering a buy or sale without a price no longer stops at the browser's "Preencha este campo": a note under the price offers "Registrar com <current quote>" (fills the price and registers) or "Vou digitar" (back to the field). If the currency paid differs from the asset's, the quote is converted at today's rate (and says so); if the trade date is not today, it warns that it is today's quote, not that day's. No quote (or no rate to convert): it just asks for the price.
+
+
 ## [0.15.1] - 2026-11-18
 
 No database change; updating is enough.

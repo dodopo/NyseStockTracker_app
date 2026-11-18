@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useId, useMemo, useState } from "react";
+import React, { Suspense, lazy, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, History, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { format } from "date-fns";
@@ -16,6 +16,7 @@ import { ClassificationCard } from "./ClassificationCard";
 import { useLiveFx } from "../../hooks/useLiveFx";
 import { MaturityLadderCard } from "./MaturityLadderCard";
 import { evaluatePicks } from "./tranchePicks";
+import { suggestPrice } from "./priceSuggestion";
 import { defaultClassification } from "../../../shared/classification";
 import { defaultTargetDays, localToday, replayTranches, type LotChoice, type TrancheTrade } from "../../../shared/tranches";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
@@ -397,6 +398,7 @@ function StockDetail({
           assetCurrency={assetCurrency}
           assetTargetDays={assetTargetDays}
           trades={native.trades}
+          quote={currentPrice}
           portfolio={portfolio}
         />
 
@@ -470,6 +472,7 @@ function TransactionForm({
   assetCurrency,
   assetTargetDays,
   trades,
+  quote,
   portfolio,
 }: {
   ticker: string;
@@ -477,6 +480,8 @@ function TransactionForm({
   assetTargetDays: number | null;
   /** The asset's trades (in its currency), to list the tranches open on the sale date. */
   trades: Array<TrancheTrade & { id?: number }>;
+  /** Current quote, in the asset's currency (offered when the price is left blank). */
+  quote: number;
   portfolio: PortfolioState;
 }) {
   const [type, setType] = useState<TransactionType>("BUY");
@@ -500,13 +505,43 @@ function TransactionForm({
   const effectiveShares = choosing ? pickedTotal : shares;
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Blank price: offer the current quote (in the currency paid; converted at today's rate if needed).
+  const [askPrice, setAskPrice] = useState(false);
+  const fx = useLiveFx(currency !== assetCurrency);
+  const suggestion = suggestPrice({
+    quote,
+    assetCurrency,
+    tradeCurrency: currency,
+    live: fx.status === "ready" ? fx.rates : null,
+  });
+  const priceRef = useRef<HTMLInputElement>(null);
+  // A message is about what was sent: any change to the form clears it (no stale warning).
+  // Not when the app itself fills the price to register right away.
+  const keepMessage = useRef(false);
+  useEffect(() => {
+    if (keepMessage.current) {
+      keepMessage.current = false;
+      return;
+    }
+    setError(null);
+    setAskPrice(false);
+  }, [type, choose, picked, shares, price, date, currency, targetText]);
   const sharesId = useId();
   const priceId = useId();
   const dateId = useId();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    await register(price);
+  };
+
+  const register = async (priceValue: string) => {
     setError(null);
+    if (!priceValue.trim()) {
+      setAskPrice(true); // the offer below the price field
+      return;
+    }
+    setAskPrice(false);
 
     const targetDays = type === "BUY" && targetText.trim() ? Number(targetText) : undefined;
     let lots: LotChoice[] | undefined;
@@ -526,7 +561,7 @@ function TransactionForm({
         return;
       }
     }
-    const check = transactionSchema.safeParse({ ticker, type, shares: effectiveShares, price, date, currency, targetDays, lots });
+    const check = transactionSchema.safeParse({ ticker, type, shares: effectiveShares, price: priceValue, date, currency, targetDays, lots });
     if (!check.success) {
       setError(firstIssue(check.error));
       return;
@@ -593,12 +628,54 @@ function TransactionForm({
               inputMode="decimal"
               placeholder="ex: 162.85"
               className="tv-input w-full"
+              ref={priceRef}
               value={price}
+              aria-invalid={askPrice}
               onChange={(e) => setPrice(e.target.value.replace(",", "."))}
-              required
             />
           </div>
         </div>
+
+        {askPrice && (
+          <div role="alert" className="rounded border border-amber-400/40 bg-amber-400/10 p-3 text-xs space-y-2">
+            <p className="text-tv-text/90">
+              {suggestion
+                ? `Sem preço. Usar a cotação de agora${suggestion.converted ? `, convertida para ${currency} pelo câmbio de hoje` : ""}?`
+                : "Sem preço, e sem cotação agora para sugerir: digite o preço."}
+              {suggestion && date !== localToday() && (
+                <span className="block text-amber-400">
+                  Atenção: é a cotação de hoje, não a de {date.split("-").reverse().join("/")}.
+                </span>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {suggestion && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  className="tv-btn py-1 text-xs"
+                  onClick={() => {
+                    keepMessage.current = true; // filling the price must not clear the result of this register
+                    setPrice(suggestion.value);
+                    void register(suggestion.value);
+                  }}
+                >
+                  Registrar com {formatPrice(Number(suggestion.value), currency)}
+                </button>
+              )}
+              <button
+                type="button"
+                className="px-3 py-1 rounded border border-white/10 hover:bg-white/5"
+                onClick={() => {
+                  setAskPrice(false);
+                  priceRef.current?.focus();
+                }}
+              >
+                Vou digitar
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
@@ -671,7 +748,8 @@ function TransactionForm({
                         inputMode="decimal"
                         aria-label={`Quantidade a vender da compra de ${t.buy.date}`}
                         aria-invalid={invalid || over}
-                        className={cn("tv-input w-28 py-0.5", (invalid || over) && "border-tv-down text-tv-down")}
+                        className="tv-input w-28 py-0.5"
+                        title={over ? `Esta tranche só tem ${t.remaining} aberta nessa data` : invalid ? "Número inválido" : undefined}
                         placeholder="0"
                         value={raw}
                         onChange={(e) => setPicked((cur) => ({ ...cur, [t.buyId!]: e.target.value.replace(",", ".") }))}
