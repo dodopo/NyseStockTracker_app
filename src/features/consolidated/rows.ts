@@ -1,7 +1,8 @@
 import { assetTypeOfTicker, isCryptoTicker } from "../../../shared/assetTypes";
 import { defaultClassification } from "../../../shared/classification";
 import { isCurrency, type CurrencyCode, type RateTable } from "../../../shared/currencies";
-import { positionIn } from "../../../shared/fxPositions";
+import { convertTrades, positionIn } from "../../../shared/fxPositions";
+import { defaultTargetDays, maturityOf, replayTranches, type MaturityBucket } from "../../../shared/tranches";
 import type { StockPrice } from "../../services/marketService";
 import type { PortfolioItem, Stock, Transaction } from "../../types";
 
@@ -71,6 +72,40 @@ export function valueByPortfolio(rows: PortfolioItem[]) {
   for (const r of rows) {
     if (r.portfolioId === null) continue;
     totals.set(r.portfolioId, (totals.get(r.portfolioId) ?? 0) + r.marketValue);
+  }
+  return totals;
+}
+
+/**
+ * Value by maturity: each open tranche of each shown row falls in the horizon
+ * of the days left to its target (or "Maturada" / "Não definido"). The sum per
+ * row is the row's market value (tranches add up to the position).
+ */
+export function maturityAllocation(
+  rows: PortfolioItem[],
+  stocks: Stock[],
+  transactions: Transaction[],
+  today: string,
+  live?: RateTable | null
+): Map<MaturityBucket, number> {
+  const tradesOf = new Map<string, Transaction[]>();
+  for (const t of transactions) {
+    const k = `${t.portfolio_id ?? 0}:${t.ticker}`;
+    const list = tradesOf.get(k) ?? [];
+    list.push(t);
+    tradesOf.set(k, list);
+  }
+  const stockOf = new Map(stocks.map((s) => [`${s.portfolio_id ?? 0}:${s.ticker}`, s]));
+  const totals = new Map<MaturityBucket, number>();
+  for (const r of rows) {
+    const s = stockOf.get(r.key);
+    const target = s?.target_days === undefined ? defaultTargetDays(r.horizon) : s.target_days;
+    // the same trades the position used (a trade left out for lack of a rate stays out here too)
+    const used = convertTrades(tradesOf.get(r.key) ?? [], r.assetCurrency, r.currency, live).trades;
+    for (const t of replayTranches(used, target).open) {
+      const { bucket } = maturityOf(t.targetDate, today);
+      totals.set(bucket, (totals.get(bucket) ?? 0) + t.remainingNumber * r.currentPrice);
+    }
   }
   return totals;
 }

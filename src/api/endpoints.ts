@@ -7,6 +7,7 @@ import type {
   GlobalData,
   IndicatorsResponse,
   LiveFx,
+  NewTransaction,
   Portfolio,
   Stock,
   StockStats,
@@ -65,11 +66,14 @@ export const portfolioApi = {
   deleteStock: (portfolioId: number, ticker: string) =>
     api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE", portfolioId }),
   transactions: (portfolioId: number) => api<Transaction[]>("/api/transactions?order=desc", { portfolioId }),
-  addTransaction: (portfolioId: number, tx: Omit<Transaction, "id" | "sort_order" | "fx">) =>
+  addTransaction: (portfolioId: number, tx: NewTransaction) =>
     api<{ success: boolean; id: number; fx: FxSnapshot | null }>("/api/transactions", { method: "POST", body: tx, portfolioId }),
   classifyStock: (portfolioId: number, ticker: string, changes: ClassificationChanges) =>
     api<Stock>(`/api/stocks/${encodeURIComponent(ticker)}/classification`, { method: "PATCH", body: changes, portfolioId }),
   deleteTransaction: (portfolioId: number, id: number) => api(`/api/transactions/${id}`, { method: "DELETE", portfolioId }),
+  /** A tranche's own target in days (null = follow the asset's thesis). */
+  setTrancheTarget: (portfolioId: number, id: number, targetDays: number | null) =>
+    api(`/api/transactions/${id}/target`, { method: "PATCH", body: { targetDays }, portfolioId }),
   exportBackup: () => api<BackupFileData>("/api/export"),
   importBackup: (backup: BackupFileData, confirmPassword?: string) =>
     api<{ success: boolean; user: AuthUser; skipped: number }>("/api/import", {

@@ -14,6 +14,10 @@ import { convertTrades } from "../../../shared/fxPositions";
 import { CURRENCIES, CURRENCY_LABEL, isCurrency, type CurrencyCode } from "../../../shared/currencies";
 import { ClassificationCard } from "./ClassificationCard";
 import { useLiveFx } from "../../hooks/useLiveFx";
+import { MaturityLadderCard } from "./MaturityLadderCard";
+import { Big } from "../../../shared/decimal";
+import { defaultClassification } from "../../../shared/classification";
+import { defaultTargetDays, localToday, replayTranches, type LotChoice, type TrancheTrade } from "../../../shared/tranches";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
 import { compareTransactions } from "../../../shared/validation";
 // The chart library is large: load it only when an asset is opened.
@@ -281,6 +285,16 @@ function StockDetail({
   const native = useMemo(() => convertTrades(transactions, assetCurrency, assetCurrency, live), [transactions, assetCurrency, live]);
   const position = useMemo(() => calculatePosition(native.trades, currentPrice), [native, currentPrice]);
   const tradeCurrency = (t: { currency?: string }) => (isCurrency(t.currency) ? t.currency : assetCurrency);
+
+  // Tranches: quantities from the real trades, prices in the asset's currency (each at its PTAX).
+  const horizon = stock.horizon === undefined ? defaultClassification(assetTypeOf(stock)).horizon : stock.horizon;
+  const assetTargetDays = stock.target_days === undefined ? defaultTargetDays(horizon) : stock.target_days;
+  const today = localToday();
+  const tranches = useMemo(() => {
+    // the same trades as the position (a trade left out for lack of a rate stays out here too)
+    return replayTranches(native.trades, assetTargetDays);
+  }, [native, transactions, assetTargetDays]);
+  const buyDate = useMemo(() => new Map(transactions.filter((t) => t.type === "BUY").map((t) => [t.id, t.date])), [transactions]);
   const history = useMemo(() => [...transactions].sort(compareTransactions).reverse(), [transactions]);
 
   const removeTransaction = async (t: (typeof transactions)[number]) => {
@@ -368,8 +382,23 @@ function StockDetail({
 
       <ClassificationCard stock={stock} tab={tab} portfolio={portfolio} />
 
+      <MaturityLadderCard
+        tranches={tranches.open}
+        today={today}
+        currentPrice={currentPrice}
+        currency={assetCurrency}
+        assetTargetDays={assetTargetDays}
+        portfolio={portfolio}
+      />
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <TransactionForm ticker={stock.ticker} assetCurrency={assetCurrency} portfolio={portfolio} />
+        <TransactionForm
+          ticker={stock.ticker}
+          assetCurrency={assetCurrency}
+          assetTargetDays={assetTargetDays}
+          trades={native.trades}
+          portfolio={portfolio}
+        />
 
         <Card title="Histórico de Transações">
           <ul className="space-y-3 max-h-[340px] overflow-y-auto pr-2">
@@ -386,6 +415,16 @@ function StockDetail({
                     {formatQuantity(t.shares)} un @ {formatPrice(t.price, tradeCurrency(t))}
                   </div>
                   <PtaxLine fx={t.fx} />
+                  {t.type === "SELL" && (
+                    <div className="text-[10px] text-tv-text/40">
+                      {t.lots?.length
+                        ? `Tranches: ${t.lots.map((l) => `${buyDate.get(l.buyId) ?? "?"} (${formatQuantity(l.shares)})`).join(", ")}`
+                        : "Tranches: as mais antigas primeiro"}
+                    </div>
+                  )}
+                  {t.type === "BUY" && t.target_days != null && (
+                    <div className="text-[10px] text-tv-text/40">Prazo próprio: {t.target_days.toLocaleString("pt-BR")} dias</div>
+                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-tv-text/40">{t.date}</div>
@@ -426,13 +465,35 @@ function PtaxLine({ fx }: { fx: PortfolioState["transactions"][number]["fx"] }) 
   );
 }
 
-function TransactionForm({ ticker, assetCurrency, portfolio }: { ticker: string; assetCurrency: CurrencyCode; portfolio: PortfolioState }) {
+function TransactionForm({
+  ticker,
+  assetCurrency,
+  assetTargetDays,
+  trades,
+  portfolio,
+}: {
+  ticker: string;
+  assetCurrency: CurrencyCode;
+  assetTargetDays: number | null;
+  /** The asset's trades (in its currency), to list the tranches open on the sale date. */
+  trades: Array<TrancheTrade & { id?: number }>;
+  portfolio: PortfolioState;
+}) {
   const [type, setType] = useState<TransactionType>("BUY");
+  const [targetText, setTargetText] = useState("");
+  const [choose, setChoose] = useState(false);
+  const [picked, setPicked] = useState<Record<number, string>>({});
+  const targetId = useId();
   const [currency, setCurrency] = useState<CurrencyCode>(assetCurrency);
   const currencyId = useId();
   const [shares, setShares] = useState("");
   const [price, setPrice] = useState("");
   const [date, setDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  // Tranches open ON the sale date (a later purchase cannot be chosen; one sold later still can).
+  const openTranches = useMemo(
+    () => replayTranches(trades.filter((t) => t.date <= date), assetTargetDays).open,
+    [trades, date, assetTargetDays]
+  );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const sharesId = useId();
@@ -443,7 +504,28 @@ function TransactionForm({ ticker, assetCurrency, portfolio }: { ticker: string;
     e.preventDefault();
     setError(null);
 
-    const check = transactionSchema.safeParse({ ticker, type, shares, price, date, currency });
+    const targetDays = type === "BUY" && targetText.trim() ? Number(targetText) : undefined;
+    let lots: LotChoice[] | undefined;
+    if (type === "SELL" && choose) {
+      lots = Object.entries(picked)
+        .filter(([, q]) => q.trim() !== "" && Number(q) > 0)
+        .map(([buyId, q]) => ({ buyId: Number(buyId), shares: q.trim() }));
+      if (!lots.length) {
+        setError("Escolha de quais tranches sai a venda, ou use 'mais antigas primeiro'.");
+        return;
+      }
+      try {
+        const sum = lots.reduce((acc, l) => acc.plus(new Big(l.shares)), new Big(0));
+        if (!sum.eq(new Big(shares || "0"))) {
+          setError(`As tranches escolhidas somam ${sum.toFixed()}, e a venda é de ${shares || "0"}.`);
+          return;
+        }
+      } catch {
+        setError("Quantidade inválida numa tranche.");
+        return;
+      }
+    }
+    const check = transactionSchema.safeParse({ ticker, type, shares, price, date, currency, targetDays, lots });
     if (!check.success) {
       setError(firstIssue(check.error));
       return;
@@ -454,6 +536,9 @@ function TransactionForm({ ticker, assetCurrency, portfolio }: { ticker: string;
       await portfolio.addTransaction(check.data);
       setShares("");
       setPrice("");
+      setTargetText("");
+      setPicked({});
+      setChoose(false);
     } catch (err) {
       setError(errorMessage(err, "Erro ao registrar transação"));
     } finally {
@@ -534,6 +619,56 @@ function TransactionForm({ ticker, assetCurrency, portfolio }: { ticker: string;
             </select>
           </div>
         </div>
+        {type === "BUY" && (
+          <div className="space-y-1">
+            <FieldLabel htmlFor={targetId}>Prazo-alvo desta tranche (dias)</FieldLabel>
+            <input
+              id={targetId}
+              type="text"
+              inputMode="numeric"
+              className="tv-input w-full"
+              placeholder={assetTargetDays === null ? "sem prazo no ativo" : `em branco = o do ativo (${assetTargetDays.toLocaleString("pt-BR")} dias)`}
+              value={targetText}
+              onChange={(e) => setTargetText(e.target.value.replace(/\D/g, ""))}
+            />
+          </div>
+        )}
+
+        {type === "SELL" && (
+          <fieldset className="space-y-2">
+            <legend className="text-[10px] uppercase text-tv-text/40 font-bold">De quais tranches sai</legend>
+            <div className="flex gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="radio" name={`${targetId}-mode`} checked={!choose} onChange={() => setChoose(false)} /> Mais antigas primeiro
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name={`${targetId}-mode`} checked={choose} onChange={() => setChoose(true)} disabled={!openTranches.length} />
+                Escolher tranches
+              </label>
+            </div>
+            {choose && (
+              <ul className="space-y-1 max-h-48 overflow-y-auto">
+                {openTranches.map((t) => (
+                  <li key={t.buyId} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-mono">
+                      {t.buy.date} · aberta {formatQuantity(t.remaining)}
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      aria-label={`Quantidade a vender da compra de ${t.buy.date}`}
+                      className="tv-input w-28 py-0.5"
+                      placeholder="0"
+                      value={picked[t.buyId!] ?? ""}
+                      onChange={(e) => setPicked((cur) => ({ ...cur, [t.buyId!]: e.target.value.replace(",", ".") }))}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </fieldset>
+        )}
+
         <p className="text-[10px] text-tv-text/40">
           A PTAX (Banco Central) da data fica gravada na operação, para converter o custo em qualquer moeda.
         </p>

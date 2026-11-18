@@ -16,6 +16,28 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.15.0] - 2026-11-18
+
+**Tranches e maturação.** Each purchase is a tranche with its own target date (purchase date + target days); sales take from the oldest tranches, or from the ones you choose; the ladder shows how many days each tranche has left and the horizon those days fall in today. **Database migration v9 (adds only): back up first.** The average price and cost do not change. Going back to v0.14.x means restoring the backup (v0.14 does not know chosen tranches); `dodopoam-update` does it by itself on failure.
+
+### Added
+- **Target days of the thesis** (per asset): the "Prazo" range now comes with a number of days, starting at the range's upper bound (Curtíssimo 30, Curto 180, Médio 720, Longo 1,800; Longuíssimo starts at 3,650) and editable; the range always follows the days.
+- **Tranches.** Each BUY inherits the asset's target, or gets its own ("Prazo-alvo desta tranche"), also editable later in the ladder. Target date = purchase date + target days.
+- **Sales and tranches.** By default a sale takes from the oldest tranches; "Escolher tranches" in the sale form lets you say how much comes from each. Impossible choices are refused (more than a tranche has at that date, another asset's or portfolio's purchase, a total that does not match), and so is a later change that would break a choice already made (a back-dated automatic sale eating a chosen tranche, deleting a purchase a sale chose).
+- **Escada de maturação** (asset detail): one line per open tranche with purchase date, open quantity, price, target days, maturity date, days left, the horizon it is in today ("Maturada" highlighted), today's value and the result against that purchase's price.
+- **Consolidated "Por prazo"** with a switch: **Tese** (each asset in its thesis range, as before) or **Maturação** (each tranche's value in the range of the days it has left; one asset may span several ranges).
+- History shows which tranches each sale took and each purchase's own target.
+- API: `classification` accepts `targetDays`; trades accept `targetDays` (BUY) and `lots` (SELL, `[{buyId, shares}]`) and return `target_days` and `lots`; `PATCH /api/transactions/:id/target`.
+
+### Changed
+- Backups carry targets and chosen tranches (purchase ids are remapped on restore; a choice that does not fit falls back to oldest first and is counted as skipped).
+
+### Security
+- The database itself refuses a tranche choice across assets or portfolios, or from a sale to a sale (trigger), refuses changing the date, quantity, asset or type of a trade that is part of a choice (trigger), and refuses deleting a chosen purchase (foreign key); deleting a whole asset, portfolio or account still works.
+- An invalid tranche choice is refused before asking the Banco Central.
+- Independent review before release: no high-severity finding; 1 medium (an asset with inconsistent history left by an older version blocked unrelated trades: now only a change that creates a new problem is refused) and 3 low ones fixed, each with a test that fails without the fix. The sale form lists the tranches open on the sale date.
+
+
 ## [0.14.0] - 2026-11-17
 
 **Classificações e multimoeda.** Each asset gets liquidity, horizon and jurisdiction; each trade records the currency paid and the Banco Central PTAX of its date, so cost and results can be shown in BRL, USD, EUR or CHF at the historical rate. **Database migration v8 (adds columns only): back up first.** An older version still runs on the migrated database, but going back is safest by restoring the backup, which `dodopoam-update` does by itself on failure.
