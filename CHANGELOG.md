@@ -16,6 +16,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.15.1] - 2026-11-18
+
+No database change; updating is enough.
+
+### Fixed
+- Sale with "Escolher tranches": the quantity sold is now the sum of what you choose in each tranche, calculated as you type (exact decimals) and locked; before, it was a separate field that had to match by hand ("Preencha este campo").
+
+### Added
+- A "tudo" button on each tranche fills its whole open quantity; a value above what the tranche has (or not a number) is marked in red right away; the total of the sale is shown under the list.
+
+
 ## [0.15.0] - 2026-11-18
 
 **Tranches e maturação.** Each purchase is a tranche with its own target date (purchase date + target days); sales take from the oldest tranches, or from the ones you choose; the ladder shows how many days each tranche has left and the horizon those days fall in today. **Database migration v9 (adds only): back up first.** The average price and cost do not change. Going back to v0.14.x means restoring the backup (v0.14 does not know chosen tranches); `dodopoam-update` does it by itself on failure.

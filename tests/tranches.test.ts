@@ -387,3 +387,25 @@ describe("achados da revisão independente (v0.15.0)", () => {
     expect(total).toBe(2000);
   });
 });
+
+import { evaluatePicks } from "../src/features/actions/tranchePicks";
+
+describe("venda escolhendo tranches: quantidade = soma das escolhas", () => {
+  const open = replayTranches([buy(1, "2025-11-09", "0.00295"), buy(2, "2026-10-29", "0.00001"), buy(3, "2026-11-15", "3")], 1800).open;
+
+  it("soma exata, com decimais (0,0009 + 0,00001 + 1 = 1,00091); vazio não conta", () => {
+    expect(evaluatePicks(open, { 1: "0.0009", 2: "0.00001", 3: "1" }).total).toBe("1.00091");
+    expect(evaluatePicks(open, { 1: "0.1", 3: "0.2" }).total).toBe("0.3");
+    expect(evaluatePicks(open, {}).total).toBe("");
+  });
+
+  it("acima do saldo da tranche ou texto inválido fica marcado (e não entra na soma se inválido)", () => {
+    const r = evaluatePicks(open, { 1: "0.01", 2: "abc", 3: "1" });
+    expect(r.picks.map((p) => [p.over, p.invalid])).toEqual([[true, false], [false, true], [false, false]]);
+    expect(r.total).toBe("1.01");
+  });
+
+  it("tranche que não está aberta na data não entra, mesmo se digitada antes", () => {
+    expect(evaluatePicks(open, { 99: "5", 3: "1" }).total).toBe("1");
+  });
+});

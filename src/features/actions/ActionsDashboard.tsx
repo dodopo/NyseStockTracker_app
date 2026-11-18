@@ -15,7 +15,7 @@ import { CURRENCIES, CURRENCY_LABEL, isCurrency, type CurrencyCode } from "../..
 import { ClassificationCard } from "./ClassificationCard";
 import { useLiveFx } from "../../hooks/useLiveFx";
 import { MaturityLadderCard } from "./MaturityLadderCard";
-import { Big } from "../../../shared/decimal";
+import { evaluatePicks } from "./tranchePicks";
 import { defaultClassification } from "../../../shared/classification";
 import { defaultTargetDays, localToday, replayTranches, type LotChoice, type TrancheTrade } from "../../../shared/tranches";
 import { firstIssue, transactionSchema } from "../../../shared/schemas";
@@ -494,6 +494,10 @@ function TransactionForm({
     () => replayTranches(trades.filter((t) => t.date <= date), assetTargetDays).open,
     [trades, date, assetTargetDays]
   );
+  // Choosing tranches: the quantity sold IS the sum of what was chosen (exact decimals).
+  const choosing = type === "SELL" && choose;
+  const { picks, sum: pickedSum, total: pickedTotal } = evaluatePicks(openTranches, picked);
+  const effectiveShares = choosing ? pickedTotal : shares;
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const sharesId = useId();
@@ -506,26 +510,23 @@ function TransactionForm({
 
     const targetDays = type === "BUY" && targetText.trim() ? Number(targetText) : undefined;
     let lots: LotChoice[] | undefined;
-    if (type === "SELL" && choose) {
-      lots = Object.entries(picked)
-        .filter(([, q]) => q.trim() !== "" && Number(q) > 0)
-        .map(([buyId, q]) => ({ buyId: Number(buyId), shares: q.trim() }));
-      if (!lots.length) {
-        setError("Escolha de quais tranches sai a venda, ou use 'mais antigas primeiro'.");
+    if (choosing) {
+      const bad = picks.find((p) => p.invalid || p.over);
+      if (bad) {
+        setError(
+          bad.invalid
+            ? `Quantidade inválida na tranche de ${bad.tranche.buy.date}.`
+            : `A tranche de ${bad.tranche.buy.date} só tem ${formatQuantity(bad.tranche.remaining)} aberta nessa data.`
+        );
         return;
       }
-      try {
-        const sum = lots.reduce((acc, l) => acc.plus(new Big(l.shares)), new Big(0));
-        if (!sum.eq(new Big(shares || "0"))) {
-          setError(`As tranches escolhidas somam ${sum.toFixed()}, e a venda é de ${shares || "0"}.`);
-          return;
-        }
-      } catch {
-        setError("Quantidade inválida numa tranche.");
+      lots = picks.filter((p) => p.value).map((p) => ({ buyId: p.tranche.buyId!, shares: p.value! }));
+      if (!lots.length) {
+        setError("Diga quanto sai de cada tranche, ou use 'mais antigas primeiro'.");
         return;
       }
     }
-    const check = transactionSchema.safeParse({ ticker, type, shares, price, date, currency, targetDays, lots });
+    const check = transactionSchema.safeParse({ ticker, type, shares: effectiveShares, price, date, currency, targetDays, lots });
     if (!check.success) {
       setError(firstIssue(check.error));
       return;
@@ -574,11 +575,14 @@ function TransactionForm({
               id={sharesId}
               type="text"
               inputMode="decimal"
-              placeholder="ex: 10 ou 0.5"
-              className="tv-input w-full"
-              value={shares}
-              onChange={(e) => setShares(e.target.value.replace(",", "."))}
-              required
+              placeholder={choosing ? "soma das tranches" : "ex: 10 ou 0.5"}
+              className={cn("tv-input w-full", choosing && "opacity-70 cursor-not-allowed")}
+              value={effectiveShares}
+              readOnly={choosing}
+              aria-readonly={choosing}
+              title={choosing ? "Soma das quantidades escolhidas em cada tranche" : undefined}
+              onChange={(e) => !choosing && setShares(e.target.value.replace(",", "."))}
+              required={!choosing}
             />
           </div>
           <div className="space-y-1">
@@ -648,22 +652,37 @@ function TransactionForm({
             </div>
             {choose && (
               <ul className="space-y-1 max-h-48 overflow-y-auto">
-                {openTranches.map((t) => (
+                {picks.map(({ tranche: t, raw, invalid, over }) => (
                   <li key={t.buyId} className="flex items-center justify-between gap-2 text-xs">
                     <span className="font-mono">
                       {t.buy.date} · aberta {formatQuantity(t.remaining)}
                     </span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      aria-label={`Quantidade a vender da compra de ${t.buy.date}`}
-                      className="tv-input w-28 py-0.5"
-                      placeholder="0"
-                      value={picked[t.buyId!] ?? ""}
-                      onChange={(e) => setPicked((cur) => ({ ...cur, [t.buyId!]: e.target.value.replace(",", ".") }))}
-                    />
+                    <span className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="px-1.5 py-0.5 rounded border border-white/10 text-tv-text/60 hover:bg-white/5"
+                        onClick={() => setPicked((cur) => ({ ...cur, [t.buyId!]: t.remaining }))}
+                        title={`Vender a tranche inteira (${t.remaining})`}
+                      >
+                        tudo
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        aria-label={`Quantidade a vender da compra de ${t.buy.date}`}
+                        aria-invalid={invalid || over}
+                        className={cn("tv-input w-28 py-0.5", (invalid || over) && "border-tv-down text-tv-down")}
+                        placeholder="0"
+                        value={raw}
+                        onChange={(e) => setPicked((cur) => ({ ...cur, [t.buyId!]: e.target.value.replace(",", ".") }))}
+                      />
+                    </span>
                   </li>
                 ))}
+                <li className="flex justify-between text-xs pt-1 border-t border-white/10">
+                  <span className="text-tv-text/60">Total da venda</span>
+                  <span className="font-mono font-semibold">{formatQuantity(pickedSum.toFixed())}</span>
+                </li>
               </ul>
             )}
           </fieldset>
