@@ -38,6 +38,14 @@ body {
   border-color: var(--color-tv-accent);
 }
 
+/* A field marked invalid (aria-invalid="true") is red, focused or not. Plain CSS on
+   purpose: .tv-input is unlayered, so Tailwind color utilities cannot override it. */
+.tv-input[aria-invalid="true"],
+.tv-input[aria-invalid="true"]:focus {
+  border-color: var(--color-tv-down);
+  color: var(--color-tv-down);
+}
+
 .tv-btn {
   background-color: var(--color-tv-accent);
   color: white;
