@@ -368,6 +368,68 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // v9 = v0.15.0 tranches and maturity. Only ADDS. An older version still starts on
+    // it, but does not know about chosen tranches (deleting a chosen purchase fails;
+    // a back-dated sale may break a choice): going back means restoring the backup,
+    // which dodopoam-update does by itself. This version tolerates such leftovers.
+    // - stocks.target_days: the thesis target in days (null = none);
+    // - transactions.target_days: a BUY tranche's own target (null = the asset's);
+    // - sell_lots: tranches a SELL takes from, when the user chose them (no row =
+    //   oldest first, computed on the fly so it never goes stale).
+    // Triggers keep a choice inside one asset of one portfolio, SELL -> BUY.
+    // Values written out here on purpose (a migration never changes).
+    version: 9,
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE stocks ADD COLUMN target_days INTEGER
+          CHECK (target_days IS NULL OR (target_days BETWEEN 1 AND 36500));
+        UPDATE stocks SET target_days = CASE horizon
+          WHEN 'ultra_short' THEN 30 WHEN 'short' THEN 180 WHEN 'medium' THEN 720
+          WHEN 'long' THEN 1800 WHEN 'ultra_long' THEN 3650 END
+        WHERE horizon IS NOT NULL;
+
+        ALTER TABLE transactions ADD COLUMN target_days INTEGER
+          CHECK (target_days IS NULL OR (target_days BETWEEN 1 AND 36500));
+
+        -- buy_id has no ON DELETE action: deleting a chosen BUY fails (checked at the
+        -- end of the statement, so deleting a whole asset or portfolio still works).
+        CREATE TABLE sell_lots (
+          sell_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          buy_id INTEGER NOT NULL REFERENCES transactions(id),
+          shares TEXT NOT NULL,
+          PRIMARY KEY (sell_id, buy_id)
+        );
+        CREATE INDEX idx_sell_lots_buy ON sell_lots(buy_id);
+
+        CREATE TRIGGER sell_lots_same_asset
+        BEFORE INSERT ON sell_lots
+        WHEN NOT EXISTS (
+          SELECT 1 FROM transactions s JOIN transactions b
+            ON b.user_id = s.user_id AND b.portfolio_id = s.portfolio_id AND b.ticker = s.ticker
+          WHERE s.id = NEW.sell_id AND s.type = 'SELL' AND b.id = NEW.buy_id AND b.type = 'BUY'
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'sell_lots: a venda e a compra precisam ser do mesmo ativo da mesma carteira');
+        END;
+
+        -- A trade that is part of a choice cannot change what the choice depends on.
+        CREATE TRIGGER transactions_in_lots_frozen
+        BEFORE UPDATE OF user_id, portfolio_id, ticker, type, date, shares, shares_dec ON transactions
+        -- (filling shares_dec of a pre-v0.5 row, NULL until now, stays allowed)
+        WHEN OLD.shares_dec IS NOT NULL AND EXISTS (SELECT 1 FROM sell_lots WHERE sell_id = OLD.id OR buy_id = OLD.id)
+        BEGIN
+          SELECT RAISE(ABORT, 'transactions: operação faz parte de uma escolha de tranches');
+        END;
+
+        CREATE TRIGGER sell_lots_no_update
+        BEFORE UPDATE ON sell_lots
+        BEGIN
+          SELECT RAISE(ABORT, 'sell_lots: apague e grave de novo');
+        END;
+      `);
+    },
+  },
 ];
 
 export const DEFAULT_TAB = { name: "Ações", assetType: "us_stock", color: "#2962ff" } as const;

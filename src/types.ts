@@ -1,6 +1,7 @@
 import type { AssetType } from "../shared/assetTypes";
 import type { Horizon, Jurisdiction, Liquidity } from "../shared/classification";
 import type { CurrencyCode, FxSnapshot } from "../shared/currencies";
+import type { LotChoice } from "../shared/tranches";
 
 export interface Stock {
   ticker: string;
@@ -15,9 +16,16 @@ export interface Stock {
   horizon?: Horizon | null;
   jurisdiction?: Jurisdiction | null;
   currency?: CurrencyCode;
+  /** v0.15.0+: the thesis target in days (null = none). */
+  target_days?: number | null;
 }
 
-export type ClassificationChanges = { liquidity?: Liquidity; horizon?: Horizon | null; jurisdiction?: Jurisdiction | null };
+export type ClassificationChanges = {
+  liquidity?: Liquidity;
+  horizon?: Horizon | null;
+  jurisdiction?: Jurisdiction | null;
+  targetDays?: number | null;
+};
 
 export interface Tab {
   id: number;
@@ -67,7 +75,17 @@ export interface Transaction {
   /** v0.14.0+: currency paid (default: the asset's) and the PTAX frozen on the trade (null = not known yet). */
   currency?: CurrencyCode;
   fx?: FxSnapshot | null;
+  /** v0.15.0+ BUY: this tranche's own target in days (null = the asset's). */
+  target_days?: number | null;
+  /** v0.15.0+ SELL: tranches chosen (null = oldest first). */
+  lots?: LotChoice[] | null;
 }
+
+/** A new trade as the form sends it. */
+export type NewTransaction = Omit<Transaction, "id" | "sort_order" | "fx" | "target_days" | "lots"> & {
+  targetDays?: number | null;
+  lots?: LotChoice[];
+};
 
 /** Today's rates, reais per 1 unit (GET /api/fx). */
 export type LiveFx = { base: "BRL"; rates: Record<"USD" | "EUR" | "CHF", string>; source: string; fetchedAt: string; stale?: boolean };

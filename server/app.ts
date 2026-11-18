@@ -8,10 +8,11 @@ import type { AppConfig } from "./config";
 import { CandleError, createCandleService, defaultMassiveFetch, providerUrls, type AlpacaKeys, type MassiveFetch } from "./candles";
 import { ALPACA_FREE_DELAY_MS, alpacaHeaders } from "./providers/alpaca";
 import { coinbaseUsdAssets, coinbaseLiveRates, type CryptoAsset } from "./providers/coinbase";
-import { STOCK_COLUMNS, TX_COLUMNS, txListOut } from "./columns";
+import { STOCK_COLUMNS, TX_COLUMNS, createTxOut } from "./columns";
+import { defaultTargetDays, replayTranches, type LotChoice, type TrancheTrade } from "../shared/tranches";
 import { createPtax } from "./ptax";
 import { isCurrency, parseFxSnapshot, quoteCurrencyOf, type CurrencyCode, type FxSnapshot } from "../shared/currencies";
-import { defaultClassification, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Classification } from "../shared/classification";
+import { defaultClassification, horizonOfDays, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Classification, type Horizon } from "../shared/classification";
 import { defaultDataFetch, offlineDataFetch, type DataFetch } from "./providers/types";
 import { MOVING_AVERAGE_IDS, movingAverage, type MovingAverageId, type SeriesPoint } from "../shared/indicators";
 import { ensureDefaultTabs, DEFAULT_PORTFOLIO, type DB } from "./db";
@@ -37,6 +38,7 @@ import {
   tabUpdateSchema,
   transactionSchema,
   classificationSchema,
+  trancheTargetSchema,
 } from "../shared/schemas";
 import {
   LIMITS,
@@ -74,7 +76,7 @@ type UserRow = {
   last_login_at: string | null;
 };
 
-type TxRow = PositionTx & { id: number; price: string; fx?: unknown };
+type TxRow = PositionTx & { id: number; price: string; fx?: unknown; target_days?: number | null; lots?: LotChoice[] | null };
 
 
 async function defaultFinnhubFetch(url: string) {
@@ -151,8 +153,8 @@ export function createApp(
     ),
     getStock: db.prepare(`SELECT id, currency FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`),
     insertStock: db.prepare(
-      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO stocks (user_id, portfolio_id, ticker, name, created_at, asset_type, tab_id, liquidity, horizon, jurisdiction, currency, target_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
 
     getTabs: db.prepare(
@@ -185,8 +187,8 @@ export function createApp(
     ),
     getTxById: db.prepare(`SELECT id, ticker FROM transactions WHERE user_id = ? AND portfolio_id = ? AND id = ?`),
     insertTx: db.prepare(
-      `INSERT INTO transactions (user_id, portfolio_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order, currency, fx)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO transactions (user_id, portfolio_id, ticker, type, shares, price, shares_dec, price_dec, date, created_at, sort_order, currency, fx, target_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     deleteUser: db.prepare(`DELETE FROM users WHERE id = ?`),
     // Account-wide totals: never more than a backup of this account can restore.
@@ -269,7 +271,8 @@ export function createApp(
     createdAt: string,
     sortOrder: number,
     currency: CurrencyCode,
-    fx: FxSnapshot | null
+    fx: FxSnapshot | null,
+    targetDays: number | null = null
   ) {
     return q.insertTx.run(
       userId,
@@ -284,20 +287,55 @@ export function createApp(
       createdAt,
       sortOrder,
       currency,
-      fx ? JSON.stringify(fx) : null
+      fx ? JSON.stringify(fx) : null,
+      tx.type === "BUY" ? targetDays : null
     );
+  }
+
+  // Trades as the API returns them (PTAX parsed, chosen tranches on SELLs).
+  const txOut = createTxOut(db);
+  const lotsOfAsset = db.prepare(
+    `SELECT l.sell_id, l.buy_id, l.shares FROM sell_lots l JOIN transactions s ON s.id = l.sell_id
+     WHERE s.user_id = ? AND s.portfolio_id = ? AND s.ticker = ?`
+  );
+  const insertLot = db.prepare(`INSERT INTO sell_lots (sell_id, buy_id, shares) VALUES (?, ?, ?)`);
+  const sellChoosing = db.prepare(
+    `SELECT s.date FROM sell_lots l JOIN transactions s ON s.id = l.sell_id WHERE l.buy_id = ? ORDER BY s.date LIMIT 1`
+  );
+
+  /** Every trade of one asset, with the tranches each SELL chose (for the tranche replay). */
+  function assetTrades(userId: number, portfolioId: number, ticker: string): Array<TxRow & TrancheTrade> {
+    const bySell = new Map<number, LotChoice[]>();
+    for (const l of lotsOfAsset.all(userId, portfolioId, ticker) as Array<{ sell_id: number; buy_id: number; shares: string }>) {
+      const list = bySell.get(l.sell_id) ?? [];
+      list.push({ buyId: l.buy_id, shares: l.shares });
+      bySell.set(l.sell_id, list);
+    }
+    return (q.getTxByTicker.all(userId, portfolioId, ticker) as TxRow[]).map((t) => ({ ...t, lots: bySell.get(t.id) ?? null }));
+  }
+
+  /**
+   * The problem a change would CREATE in the tranches of an asset, or null.
+   * Problems already there (left by an older version, or edited by hand) do not
+   * block unrelated trades: only a change that adds one is refused.
+   */
+  function newTrancheProblem(before: TrancheTrade[], after: TrancheTrade[]): string | null {
+    const had = replayTranches(before, null).errors;
+    const has = replayTranches(after, null).errors;
+    if (has.length <= had.length) return null;
+    return has.find((e) => !had.includes(e)) ?? has[has.length - 1];
   }
 
   /** Inserts an asset with its classification and quote currency. */
   function insertStock(
     userId: number,
     portfolioId: number,
-    s: { ticker: string; name: string; createdAt: string; assetType: AssetType; tabId: number | null; classification: Classification }
+    s: { ticker: string; name: string; createdAt: string; assetType: AssetType; tabId: number | null; classification: Classification; targetDays?: number | null }
   ) {
     const c = s.classification;
     return q.insertStock.run(
       userId, portfolioId, s.ticker, s.name, s.createdAt, s.assetType, s.tabId,
-      c.liquidity, c.horizon, c.jurisdiction, quoteCurrencyOf(s.assetType)
+      c.liquidity, c.horizon, c.jurisdiction, quoteCurrencyOf(s.assetType), s.targetDays ?? defaultTargetDays(c.horizon)
     );
   }
 
@@ -901,19 +939,40 @@ export function createApp(
       `UPDATE stocks SET
          liquidity = CASE WHEN @setLiquidity THEN @liquidity ELSE liquidity END,
          horizon = CASE WHEN @setHorizon THEN @horizon ELSE horizon END,
-         jurisdiction = CASE WHEN @setJurisdiction THEN @jurisdiction ELSE jurisdiction END
+         jurisdiction = CASE WHEN @setJurisdiction THEN @jurisdiction ELSE jurisdiction END,
+         target_days = CASE WHEN @setHorizon THEN @targetDays ELSE target_days END
        WHERE user_id = @userId AND portfolio_id = @portfolioId AND ${where}`
     );
   const classifyOne = classifyStmt("ticker = @ticker");
   const classifyTab = classifyStmt("tab_id = @tabId");
-  const classifyParams = (c: z.infer<typeof classificationSchema>) => ({
-    setLiquidity: c.liquidity !== undefined ? 1 : 0,
-    liquidity: c.liquidity ?? null,
-    setHorizon: c.horizon !== undefined ? 1 : 0,
-    horizon: c.horizon ?? null,
-    setJurisdiction: c.jurisdiction !== undefined ? 1 : 0,
-    jurisdiction: c.jurisdiction ?? null,
-  });
+  /**
+   * Horizon and target days always agree: the target says how many days, the
+   * horizon is the range they fall in. Sending only a horizon sets its default
+   * target (the range's upper bound); sending a target sets its horizon.
+   */
+  const thesisOf = (c: z.infer<typeof classificationSchema>): { horizon: Horizon | null; targetDays: number | null } | null => {
+    if (c.targetDays !== undefined) {
+      const horizon = c.targetDays === null ? null : horizonOfDays(c.targetDays);
+      if (c.horizon !== undefined && c.horizon !== horizon) {
+        throw new HttpError(400, `Prazo-alvo de ${c.targetDays} dias não é da faixa escolhida`);
+      }
+      return { horizon, targetDays: c.targetDays };
+    }
+    if (c.horizon !== undefined) return { horizon: c.horizon, targetDays: defaultTargetDays(c.horizon) };
+    return null;
+  };
+  const classifyParams = (c: z.infer<typeof classificationSchema>) => {
+    const thesis = thesisOf(c);
+    return {
+      setLiquidity: c.liquidity !== undefined ? 1 : 0,
+      liquidity: c.liquidity ?? null,
+      setHorizon: thesis ? 1 : 0,
+      horizon: thesis?.horizon ?? null,
+      targetDays: thesis?.targetDays ?? null,
+      setJurisdiction: c.jurisdiction !== undefined ? 1 : 0,
+      jurisdiction: c.jurisdiction ?? null,
+    };
+  };
   const getOneStock = db.prepare(`SELECT ${STOCK_COLUMNS} FROM stocks WHERE user_id = ? AND portfolio_id = ? AND ticker = ?`);
 
   app.patch("/api/stocks/:ticker/classification", requireAuth, requirePortfolio, (req, res) => {
@@ -1040,10 +1099,10 @@ export function createApp(
     if (req.query.ticker) {
       const ticker = normalizeTicker(req.query.ticker);
       if (!isValidTicker(ticker)) throw new HttpError(400, "Invalid ticker");
-      return res.json(txListOut(q.getTxByTicker.all(user.id, pf, ticker) as TxRow[]));
+      return res.json(txOut(q.getTxByTicker.all(user.id, pf, ticker) as TxRow[], user.id));
     }
     const order = String(req.query.order ?? "").toLowerCase();
-    res.json(txListOut((order === "desc" ? q.getTxDesc.all(user.id, pf) : q.getTxAsc.all(user.id, pf)) as TxRow[]));
+    res.json(txOut((order === "desc" ? q.getTxDesc.all(user.id, pf) : q.getTxAsc.all(user.id, pf)) as TxRow[], user.id));
   });
 
   app.post("/api/transactions", requireAuth, requirePortfolio, wrap(async (req, res) => {
@@ -1068,6 +1127,13 @@ export function createApp(
         { ticker, type, shares, date, sort_order: Number((q.nextSortOrder.get(user.id, pf) as { next: number }).next) },
       ]);
     if (sellTooBig()) throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
+    const trancheProblem = () => {
+      const before = assetTrades(user.id, pf, ticker);
+      const nextSortOrder = Number((q.nextSortOrder.get(user.id, pf) as { next: number }).next);
+      return newTrancheProblem(before, [...before, { ...tx, sort_order: nextSortOrder, lots: tx.lots ?? null }]);
+    };
+    const early = trancheProblem();
+    if (early) throw new HttpError(400, early); // before asking the Banco Central
     const fx = await ptaxOrLater(date);
 
     const id = db.transaction(() => {
@@ -1084,7 +1150,14 @@ export function createApp(
         throw new HttpError(400, "Cannot SELL more shares than held on that date (no short allowed)");
       }
 
-      return insertTransaction(user.id, pf, tx, nowIso(), nextSortOrder, currency, fx).lastInsertRowid;
+      // Tranches: the whole history of the asset is replayed with the new trade; a choice
+      // that does not fit (or a sale that would eat a tranche a later sale chose) is refused.
+      const problem = trancheProblem(); // again, atomically with the insert
+      if (problem) throw new HttpError(400, problem);
+
+      const newId = insertTransaction(user.id, pf, tx, nowIso(), nextSortOrder, currency, fx, tx.targetDays ?? null).lastInsertRowid;
+      for (const lot of tx.lots ?? []) insertLot.run(newId, lot.buyId, lot.shares);
+      return newId;
     })();
 
     res.status(201).json({ success: true, id: Number(id), fx });
@@ -1100,14 +1173,35 @@ export function createApp(
       const tx = q.getTxById.get(user.id, pf, id) as { id: number; ticker: string } | undefined;
       if (!tx) return; // Not found or not yours: idempotent 204, reveals nothing.
 
-      const remaining = (q.getTxByTicker.all(user.id, pf, tx.ticker) as TxRow[]).filter((t) => t.id !== id);
+      const chosenBy = sellChoosing.get(id) as { date: string } | undefined;
+      if (chosenBy) {
+        throw new HttpError(409, `Esta compra foi escolhida como tranche na venda de ${chosenBy.date}. Apague essa venda antes.`);
+      }
+      const all = assetTrades(user.id, pf, tx.ticker);
+      const remaining = all.filter((t) => t.id !== id);
       if (findNegativePosition(remaining)) {
         throw new HttpError(409, "Deleting this transaction would make the position negative");
       }
+      const problem = newTrancheProblem(all, remaining);
+      if (problem) throw new HttpError(409, `Apagar esta operação desmontaria as tranches escolhidas: ${problem}`);
       q.deleteTx.run(user.id, pf, id);
     })();
 
     res.status(204).send();
+  });
+
+  /** A tranche's own target (BUY), or null to follow the asset's thesis again. */
+  const setTrancheTarget = db.prepare(
+    `UPDATE transactions SET target_days = ? WHERE user_id = ? AND portfolio_id = ? AND id = ? AND type = 'BUY'`
+  );
+  app.patch("/api/transactions/:id/target", requireAuth, requirePortfolio, (req, res) => {
+    const user = currentUser(res);
+    const pf = currentPortfolio(res);
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Invalid id");
+    const { targetDays } = parseBody(trancheTargetSchema, req.body);
+    if (setTrancheTarget.run(targetDays, user.id, pf, id).changes === 0) throw new HttpError(404, "Compra não encontrada");
+    res.json({ success: true, id, targetDays });
   });
 
   // ---------------------------------------------------------------------------
@@ -1135,7 +1229,7 @@ export function createApp(
       portfolios: q.exportPortfolios.all(user.id),
       tabs: q.exportTabs.all(user.id),
       stocks: q.exportStocks.all(user.id),
-      transactions: txListOut(q.exportTx.all(user.id) as TxRow[]),
+      transactions: txOut(q.exportTx.all(user.id) as TxRow[], user.id),
     });
   });
 
@@ -1270,22 +1364,38 @@ export function createApp(
         const mapped = tabIdMap.get(Number(st?.tab_id));
         // null: default tab below. A tab of another portfolio or type is never used.
         const tabId = mapped && mapped.assetType === assetType && mapped.portfolioId === portfolioId ? mapped.id : null;
+        const classification = classificationFromBackup(st, assetType);
+        const rawTarget = Number(st?.target_days);
+        const backupTarget = Number.isSafeInteger(rawTarget) && rawTarget >= 1 && rawTarget <= 36500 ? rawTarget : null;
         insertStock(user.id, portfolioId, {
           ticker,
           name,
           createdAt: shortText(st?.created_at) || nowIso(),
           assetType,
           tabId,
-          classification: classificationFromBackup(st, assetType),
+          classification,
+          // the backup's target only if it agrees with the horizon; else the horizon's default
+          targetDays: backupTarget !== null && horizonOfDays(backupTarget) === classification.horizon ? backupTarget : null,
         });
         knownAssets.add(`${portfolioId}:${ticker}`);
       }
 
       const imported = new Map<number, PositionTx[]>(); // per portfolio
+      // Backup trade id -> new id (ids change on restore), and SELLs that chose tranches.
+      const newTxId = new Map<number, { id: number; portfolioId: number; ticker: string; type: string }>();
+      const backupLots: Array<{ sellId: number; lots: unknown[] }> = [];
       let fallbackSortOrder = 1;
       for (const tr of transactions) {
         // Accepts numbers (backups from v0.4.x and older) or exact decimal strings (v0.5.0+).
-        const parsed = transactionSchema.safeParse(tr ?? {});
+        // Only the trade itself here; its tranche target and chosen tranches come below.
+        const parsed = transactionSchema.safeParse({
+          ticker: tr?.ticker,
+          type: tr?.type,
+          shares: tr?.shares,
+          price: tr?.price,
+          date: tr?.date,
+          ...(tr?.currency !== undefined && tr?.currency !== null ? { currency: tr.currency } : {}),
+        });
         const portfolioId = portfolioOf(tr);
         if (!parsed.success || !knownAssets.has(`${portfolioId}:${parsed.data.ticker}`)) {
           skipped++;
@@ -1300,7 +1410,12 @@ export function createApp(
         const currency = tx.currency ?? quoteCurrencyOf(assetTypeOfTicker(tx.ticker));
         const fxIn = parseFxSnapshot(tr?.fx);
         const fx = fxIn && fxIn.date <= tx.date && fxIn.date >= addIsoDays(tx.date, -15) ? fxIn : null;
-        const info = insertTransaction(user.id, portfolioId, tx, shortText(tr?.created_at) || nowIso(), sortOrder, currency, fx);
+        const target = Number(tr?.target_days);
+        const targetDays = Number.isSafeInteger(target) && target >= 1 && target <= 36500 ? target : null;
+        const info = insertTransaction(user.id, portfolioId, tx, shortText(tr?.created_at) || nowIso(), sortOrder, currency, fx, targetDays);
+        const newId = Number(info.lastInsertRowid);
+        if (Number.isSafeInteger(Number(tr?.id))) newTxId.set(Number(tr.id), { id: newId, portfolioId, ticker: tx.ticker, type: tx.type });
+        if (tx.type === "SELL" && Array.isArray(tr?.lots)) backupLots.push({ sellId: newId, lots: tr.lots });
         const list = imported.get(portfolioId) ?? [];
         list.push({
           id: Number(info.lastInsertRowid),
@@ -1322,6 +1437,42 @@ export function createApp(
         }
       }
 
+      // Chosen tranches: kept only when every one points to a BUY of the same asset of
+      // the same portfolio and the whole asset still replays without problems;
+      // otherwise that asset's SELLs fall back to oldest first (counted as skipped).
+      const sellInfo = new Map([...newTxId.values()].map((t) => [t.id, t]));
+      const touchedAssets = new Set<string>();
+      for (const { sellId, lots } of backupLots) {
+        const sell = sellInfo.get(sellId);
+        if (!sell) {
+          skipped++; // a SELL without a usable id in the backup: its choice cannot be kept
+          continue;
+        }
+        const mapped: LotChoice[] = [];
+        let ok = lots.length > 0 && lots.length <= 500;
+        for (const raw of lots as any[]) {
+          const buy = newTxId.get(Number(raw?.buyId));
+          const shares = parsePositiveDecimal(raw?.shares);
+          if (!buy || !shares || buy.type !== "BUY" || buy.portfolioId !== sell.portfolioId || buy.ticker !== sell.ticker) ok = false;
+          else mapped.push({ buyId: buy.id, shares });
+        }
+        if (!ok || new Set(mapped.map((m) => m.buyId)).size !== mapped.length) {
+          skipped++;
+          continue;
+        }
+        for (const m of mapped) insertLot.run(sellId, m.buyId, m.shares);
+        touchedAssets.add(`${sell.portfolioId}\u0000${sell.ticker}`);
+      }
+      for (const key of touchedAssets) {
+        const [portfolioId, ticker] = key.split("\u0000");
+        if (replayTranches(assetTrades(user.id, Number(portfolioId), ticker), null).errors.length) {
+          db.prepare(
+            `DELETE FROM sell_lots WHERE sell_id IN (SELECT id FROM transactions WHERE user_id = ? AND portfolio_id = ? AND ticker = ?)`
+          ).run(user.id, Number(portfolioId), ticker);
+          skipped++;
+        }
+      }
+
       // Assets without a valid tab (old backups) go to a default tab of their type.
       ensureDefaultTabs(db);
     })();
@@ -1338,7 +1489,7 @@ export function createApp(
         return {
           tabs: (q.getTabs.all(user.id, first.id) as TabRow[]).map(tabDto),
           stocks: q.getStocks.all(user.id, first.id),
-          transactions: txListOut(q.getTxDesc.all(user.id, first.id) as TxRow[]),
+          transactions: txOut(q.getTxDesc.all(user.id, first.id) as TxRow[], user.id),
         };
       })(),
     });

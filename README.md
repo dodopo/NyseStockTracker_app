@@ -60,7 +60,8 @@ O projeto permite:
 - Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
 - Consolidado com filtro por aba, gráfico de alocação (por aba, ativo, liquidez, prazo, jurisdição ou moeda) e valores em USD, BRL, EUR ou CHF
 - Cada operação grava a moeda paga e a PTAX de fechamento do Banco Central da data (compra e venda); custo, preço médio e resultado realizado em outra moeda usam a PTAX de cada operação (venda, IN RFB 2.180/2024, art. 57) e só o preço atual usa o câmbio de hoje
-- Classificação de cada ativo: liquidez, prazo (Curtíssimo até 30 dias, Curto até 180, Médio até 720, Longo até 1.800, Longuíssimo acima) e jurisdição (onshore/offshore), com "aplicar a todos os ativos da aba"
+- Classificação de cada ativo: liquidez, prazo (Curtíssimo até 30 dias, Curto até 180, Médio até 720, Longo até 1.800, Longuíssimo acima) com prazo-alvo em dias e jurisdição (onshore/offshore), com "aplicar a todos os ativos da aba"
+- Tranches: cada compra matura em data + prazo-alvo (o do ativo ou o próprio); vendas saem das mais antigas ou das escolhidas; escada de maturação por ativo e alocação "Por prazo" por tese ou por maturação
 - Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)

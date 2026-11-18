@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { portfolioApi, tabsApi } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { fetchQuotes, pricesToMap, type StockPrice } from "../services/marketService";
-import type { ClassificationChanges, Stock, Tab, Transaction } from "../types";
+import type { ClassificationChanges, NewTransaction, Stock, Tab, Transaction } from "../types";
 import type { AssetType } from "../../shared/assetTypes";
 import { confirmDestructive } from "../lib/confirm";
 
@@ -174,7 +174,14 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     return true;
   }, []);
 
-  const addTransaction = useCallback(async (tx: Omit<Transaction, "id" | "sort_order" | "fx">) => {
+  const setTrancheTarget = useCallback(async (id: number, targetDays: number | null) => {
+    const pid = pinned();
+    await portfolioApi.setTrancheTarget(pid, id, targetDays);
+    const next = await portfolioApi.transactions(pid);
+    if (still(pid)) setTransactions(next);
+  }, []);
+
+  const addTransaction = useCallback(async (tx: NewTransaction) => {
     const pid = pinned();
     await portfolioApi.addTransaction(pid, tx);
     const next = await portfolioApi.transactions(pid);
@@ -210,6 +217,7 @@ export function usePortfolio(portfolioId: number | null, onMissing?: () => void)
     deleteTransaction,
     classifyStock,
     classifyTab,
+    setTrancheTarget,
   };
 }
 

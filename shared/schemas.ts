@@ -115,6 +115,14 @@ export const portfolioDeleteSchema = z.object({
   confirmName: z.string().trim().max(40),
 });
 
+/** Target in calendar days: 1 to 36,500 (100 years); null = none / inherit. */
+const targetDaysField = z
+  .number({ message: "Prazo-alvo inválido" })
+  .int("Prazo-alvo em dias inteiros")
+  .min(1, "Prazo-alvo mínimo: 1 dia")
+  .max(36500, "Prazo-alvo máximo: 36.500 dias")
+  .nullable();
+
 export const transactionSchema = z.object({
   ticker: tickerSchema,
   type: z.preprocess(
@@ -126,7 +134,26 @@ export const transactionSchema = z.object({
   date: isoDateSchema,
   /** Currency paid; when absent, the asset's quote currency. */
   currency: z.enum(CURRENCIES, { message: "Moeda inválida" }).optional(),
+  /** BUY: this tranche's own target in days (null/absent = the asset's). */
+  targetDays: targetDaysField.optional(),
+  /** SELL: the tranches it takes from (absent = oldest first). */
+  lots: z
+    .array(z.object({ buyId: z.number().int().positive("Tranche inválida"), shares: decimalSchema("Quantidade da tranche") }).strict())
+    .min(1, "Escolha ao menos uma tranche")
+    .max(500, "Tranches demais")
+    .optional(),
+}).superRefine((d, ctx) => {
+  if (d.lots && d.type !== "SELL") ctx.addIssue({ code: "custom", message: "Só a venda escolhe tranches", path: ["lots"] });
+  if (d.targetDays !== undefined && d.targetDays !== null && d.type !== "BUY") {
+    ctx.addIssue({ code: "custom", message: "Prazo-alvo é da compra (tranche)", path: ["targetDays"] });
+  }
+  if (d.lots && new Set(d.lots.map((l) => l.buyId)).size !== d.lots.length) {
+    ctx.addIssue({ code: "custom", message: "A mesma tranche aparece duas vezes", path: ["lots"] });
+  }
 });
+
+/** Target of a tranche, set or cleared after the BUY was saved. */
+export const trancheTargetSchema = z.object({ targetDays: targetDaysField }).strict();
 
 const liquidityField = z.enum(LIQUIDITY_IDS as [Liquidity, ...Liquidity[]], { message: "Liquidez inválida" });
 const horizonField = z.enum(HORIZON_IDS as [Horizon, ...Horizon[]], { message: "Prazo inválido" }).nullable();
@@ -134,9 +161,17 @@ const jurisdictionField = z.enum(JURISDICTION_IDS as [Jurisdiction, ...Jurisdict
 
 /** Classification of an asset (or of every asset of a tab): only the fields sent change; null = "Não definido". */
 export const classificationSchema = z
-  .object({ liquidity: liquidityField.optional(), horizon: horizonField.optional(), jurisdiction: jurisdictionField.optional() })
+  .object({
+    liquidity: liquidityField.optional(),
+    horizon: horizonField.optional(),
+    jurisdiction: jurisdictionField.optional(),
+    /** The thesis target in days; the horizon follows it (the range those days fall in). */
+    targetDays: targetDaysField.optional(),
+  })
   .strict()
-  .refine((d) => d.liquidity !== undefined || d.horizon !== undefined || d.jurisdiction !== undefined, { message: "Nada para alterar" });
+  .refine((d) => d.liquidity !== undefined || d.horizon !== undefined || d.jurisdiction !== undefined || d.targetDays !== undefined, {
+    message: "Nada para alterar",
+  });
 
 const apiKeyField = z
   .string()

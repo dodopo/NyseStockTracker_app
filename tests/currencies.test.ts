@@ -230,7 +230,7 @@ describe("migração v8: só acrescenta colunas", () => {
       stocks: db.prepare(`SELECT * FROM stocks ORDER BY id`).all(),
       tx: db.prepare(`SELECT * FROM transactions ORDER BY id`).all(),
     };
-    migrate(db);
+    migrate(db, 8);
     expect(db.pragma("user_version", { simple: true })).toBe(8);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     expect(db.pragma("foreign_key_check")).toEqual([]);
@@ -247,7 +247,7 @@ describe("migração v8: só acrescenta colunas", () => {
     tx.forEach((t, i) => expect(t).toMatchObject(before.tx[i] as object));
     expect(tx.map((t) => [t.currency, t.fx])).toEqual([["USD", null], ["USD", null]]);
 
-    migrate(db); // idempotent
+    migrate(db, 8); // idempotent
     expect(db.prepare(`SELECT COUNT(*) AS n FROM transactions`).get()).toEqual({ n: 2 });
   });
 

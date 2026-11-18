@@ -6,7 +6,8 @@ import { useLiveFx } from "../../hooks/useLiveFx";
 import { cn, formatCurrency, formatPrice, formatQuantity, type Currency } from "../../lib/utils";
 import type { StockPrice } from "../../services/marketService";
 import type { ConsolidationMode, Portfolio, PortfolioItem, Stock, Tab, Transaction } from "../../types";
-import { buildRows } from "./rows";
+import { buildRows, maturityAllocation } from "./rows";
+import { localToday, type MaturityBucket } from "../../../shared/tranches";
 import { displaySymbol } from "../../../shared/assetTypes";
 import { CURRENCIES, isCurrency } from "../../../shared/currencies";
 import { HORIZON, JURISDICTION, LIQUIDITY, NOT_DEFINED } from "../../../shared/classification";
@@ -15,6 +16,8 @@ import { NO_TAB_KEY, allocationSlices, passesTabFilter, toggleTabFilter, type Ta
 const TAB_FILTER_KEY = "nyse.consolidated.tabs";
 const CURRENCY_KEY = "nyse.consolidated.currency";
 const ALLOC_KEY = "nyse.consolidated.allocBy";
+const HORIZON_MODE_KEY = "dam.consolidated.horizonMode";
+type HorizonMode = "thesis" | "maturity";
 const PORTFOLIO_FILTER_KEY = "dam.global.portfolios";
 type AllocBy = "portfolio" | "tab" | "asset" | "liquidity" | "horizon" | "jurisdiction" | "currency";
 const ALLOC_IDS: AllocBy[] = ["portfolio", "tab", "asset", "liquidity", "horizon", "jurisdiction", "currency"];
@@ -24,6 +27,24 @@ const HORIZON_COLOR = { ultra_short: "#f23645", short: "#ffb74d", medium: "#2962
 const JURISDICTION_COLOR = { onshore: "#089981", offshore: "#2962ff" } as const;
 const CURRENCY_COLOR: Record<string, string> = { BRL: "#089981", USD: "#2962ff", EUR: "#ab47bc", CHF: "#f23645", crypto: "#f7931a" };
 const CURRENCY_SYMBOL: Record<Currency, string> = { BRL: "R$", USD: "US$", EUR: "€", CHF: "CHF" };
+const MATURITY_LABEL: Record<MaturityBucket, string> = {
+  ultra_short: `${HORIZON.ultra_short.label} (${HORIZON.ultra_short.range})`,
+  short: `${HORIZON.short.label} (${HORIZON.short.range})`,
+  medium: `${HORIZON.medium.label} (${HORIZON.medium.range})`,
+  long: `${HORIZON.long.label} (${HORIZON.long.range})`,
+  ultra_long: `${HORIZON.ultra_long.label} (${HORIZON.ultra_long.range})`,
+  matured: "Maturada (prazo cumprido)",
+  none: "Não definido",
+};
+const MATURITY_COLOR: Record<MaturityBucket, string> = {
+  ultra_short: "#f23645",
+  short: "#ffb74d",
+  medium: "#2962ff",
+  long: "#26a69a",
+  ultra_long: "#ab47bc",
+  matured: "#facc15",
+  none: "#78909c",
+};
 /** Colors for "Por ativo" slices (tab slices use the tab color). */
 const ASSET_COLORS = ["#2962ff", "#089981", "#f7931a", "#ab47bc", "#f23645", "#26a69a", "#ffb74d", "#ec407a", "#7e57c2", "#78909c"];
 const NO_TAB_COLOR = "#78909c";
@@ -81,6 +102,10 @@ export function ConsolidatedDashboard({
     return (ALLOC_IDS as string[]).includes(saved) ? (saved as AllocBy) : "tab";
   });
   const allocBy: AllocBy = allocChoice === "portfolio" && !isGlobal ? "tab" : allocChoice;
+  const [horizonMode, setHorizonMode] = useState<HorizonMode>(() =>
+    readStored<string>(HORIZON_MODE_KEY, "maturity") === "thesis" ? "thesis" : "maturity"
+  );
+  useEffect(() => writeStored(HORIZON_MODE_KEY, horizonMode), [horizonMode]);
   const fx = useLiveFx();
 
   useEffect(() => writeStored(TAB_FILTER_KEY, tabFilter), [tabFilter]);
@@ -181,7 +206,16 @@ export function ConsolidatedDashboard({
             sumBy((r) => r.ticker, (r) => displaySymbol(r.ticker))
           : allocBy === "liquidity"
             ? sumBy((r) => r.liquidity, (r) => LIQUIDITY[r.liquidity], (r) => LIQUIDITY_COLOR[r.liquidity])
-            : allocBy === "horizon"
+            : allocBy === "horizon" && horizonMode === "maturity"
+              ? allocationSlices(
+                  [...maturityAllocation(shownRows, stocks, transactions, localToday(), live).entries()].map(([bucket, value]) => ({
+                    key: bucket,
+                    label: MATURITY_LABEL[bucket],
+                    value,
+                    color: MATURITY_COLOR[bucket],
+                  }))
+                )
+              : allocBy === "horizon"
               ? sumBy(
                   (r) => r.horizon ?? "none",
                   (r) => (r.horizon ? `${HORIZON[r.horizon].label} (${HORIZON[r.horizon].range})` : NOT_DEFINED),
@@ -370,6 +404,9 @@ export function ConsolidatedDashboard({
         <Card
           title="Alocação"
           extra={
+            <div className="flex items-center gap-2">
+            {allocBy === "horizon" &&
+              segmented<HorizonMode>("Prazo por", horizonMode, [["thesis", "Tese"], ["maturity", "Maturação"]], setHorizonMode)}
             <select
               aria-label="Alocação por"
               className="tv-input py-1 text-xs font-semibold"
@@ -382,6 +419,7 @@ export function ConsolidatedDashboard({
                 </option>
               ))}
             </select>
+            </div>
           }
         >
           <div className="flex flex-col sm:flex-row items-center gap-6">

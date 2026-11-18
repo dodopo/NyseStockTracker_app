@@ -273,7 +273,9 @@ acrescenta colunas e continua preenchendo as antigas. **A v0.13.0 muda a estrutu
 (o que for salvo na v0.13.0 depois disso se perde). A v0.14.0 só acrescenta colunas (classificação,
 moeda e PTAX): a v0.13.x ainda funciona sobre o banco migrado, mas o que for gravado nela fica com os
 valores padrão (moeda do ativo, PTAX buscada de novo quando a v0.14.0 voltar); o caminho mais seguro
-continua sendo restaurar o backup. Para essas versões, faça o rollback manual com
+continua sendo restaurar o backup. A v0.15.0 também só acrescenta (tranches), mas a v0.14.x não
+conhece as tranches escolhidas: sobre o banco migrado, apagar uma compra escolhida dá erro e uma venda
+retroativa pode desmontar uma escolha. Voltar da v0.15.0 = restaurar o backup. Para essas versões, faça o rollback manual com
 o backup tirado **antes** da atualização:
 
 1. Pare o app:
