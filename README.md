@@ -55,13 +55,16 @@ O projeto permite:
 - Contas com senha, sessões com validade e carteira isolada por usuário
 - Backup e restauração em JSON
 - Quantidades e preços com até 8 casas decimais, calculados sem erro de arredondamento
-- Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA ou Cripto)
+- Abas definidas por você (Configurações → Abas): criar, renomear, trocar a cor, reordenar e excluir; cada aba tem um tipo de ativo (Ação EUA, Cripto, Ilíquido ou Caixa)
 - Criptomoedas: busca por nome ou símbolo, cotação ao vivo, até 8 casas decimais, gráfico em tempo real e estatísticas
 - Consolidado agrupado por aba, com subtotal; clique numa linha para abrir o ativo na aba dele
-- Consolidado com filtro por aba, gráfico de alocação (por aba, ativo, liquidez, prazo, jurisdição ou moeda) e valores em USD, BRL, EUR ou CHF
+- Consolidado com filtro por aba, gráfico de alocação (por aba, ativo, liquidez, prazo, jurisdição, custódia ou moeda) e valores em USD, BRL, EUR ou CHF
 - Cada operação grava a moeda paga e a PTAX de fechamento do Banco Central da data (compra e venda); custo, preço médio e resultado realizado em outra moeda usam a PTAX de cada operação (venda, IN RFB 2.180/2024, art. 57) e só o preço atual usa o câmbio de hoje
 - Classificação de cada ativo: liquidez, prazo (Curtíssimo até 30 dias, Curto até 180, Médio até 720, Longo até 1.800, Longuíssimo acima) com prazo-alvo em dias e jurisdição (onshore/offshore), com "aplicar a todos os ativos da aba"
 - Tranches: cada compra matura em data + prazo-alvo (o do ativo ou o próprio); vendas saem das mais antigas ou das escolhidas; escada de maturação por ativo e alocação "Por prazo" por tese ou por maturação
+- Ativos ilíquidos (imóveis, participações...): cadastro pelo nome numa moeda fixa, avaliações datadas (a última até hoje vale; sem nenhuma, vale o custo), aviso de avaliação com mais de 365 dias e gráfico das avaliações com as compras e vendas
+- Caixa / dinheiro (contas, cofre, espécie): saldo numa moeda fixa, depósitos e saques, câmbio pago guardado quando o depósito é em outra moeda, extrato com o saldo depois de cada movimento
+- Custódia de cada ativo (instituição ou autocustódia) e alocação "Por custódia"
 - Endereço próprio por tela (`#/aba/3/X%3ABTCUSD`): botão voltar e favoritos funcionam
 - Botão para mostrar a senha digitada
 - Exclusão da própria conta (Configurações → Zona de perigo)

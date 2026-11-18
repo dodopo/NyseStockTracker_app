@@ -1,5 +1,6 @@
 import type { AssetType } from "../shared/assetTypes";
-import type { Horizon, Jurisdiction, Liquidity } from "../shared/classification";
+import type { Custody, Horizon, Jurisdiction, Liquidity } from "../shared/classification";
+import type { ManualPrice, Valuation } from "../shared/manualAssets";
 import type { CurrencyCode, FxSnapshot } from "../shared/currencies";
 import type { LotChoice } from "../shared/tranches";
 
@@ -18,12 +19,17 @@ export interface Stock {
   currency?: CurrencyCode;
   /** v0.15.0+: the thesis target in days (null = none). */
   target_days?: number | null;
+  /** v0.16.0+: who holds it (null = not defined). */
+  custody?: Custody | null;
+  /** v0.16.0+, illiquid assets: dated valuations, oldest first. */
+  valuations?: Valuation[];
 }
 
 export type ClassificationChanges = {
   liquidity?: Liquidity;
   horizon?: Horizon | null;
   jurisdiction?: Jurisdiction | null;
+  custody?: Custody | null;
   targetDays?: number | null;
 };
 
@@ -126,9 +132,13 @@ export interface PortfolioItem {
   /** The asset's own currency (exposure). */
   assetCurrency: CurrencyCode;
   isCrypto: boolean;
+  /** v0.16.0+: the asset type and, for an illiquid asset or cash, where its price comes from. */
+  assetType: AssetType;
+  manualPrice: ManualPrice | null;
   liquidity: Liquidity;
   horizon: Horizon | null;
   jurisdiction: Jurisdiction | null;
+  custody: Custody | null;
   /** Trades converted at today's rate because their PTAX is not known yet. */
   approxTrades: number;
   /** Trades left out (no PTAX and no rate to convert them). */

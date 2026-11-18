@@ -4,8 +4,10 @@ import { errorMessage } from "../../api/client";
 import { Card, ErrorMessage, FieldLabel } from "../../components/ui";
 import type { PortfolioState } from "../../hooks/usePortfolio";
 import type { ClassificationChanges, Stock, Tab } from "../../types";
-import { assetTypeOfTicker, displaySymbol } from "../../../shared/assetTypes";
+import { assetLabel, assetTypeOfTicker } from "../../../shared/assetTypes";
 import {
+  CUSTODY,
+  CUSTODY_IDS,
   HORIZON,
   HORIZON_IDS,
   JURISDICTION,
@@ -13,9 +15,11 @@ import {
   LIQUIDITY,
   LIQUIDITY_IDS,
   NOT_DEFINED,
+  custodyLabel,
   defaultClassification,
   horizonLabel,
   jurisdictionLabel,
+  type Custody,
   type Horizon,
   type Jurisdiction,
   type Liquidity,
@@ -26,18 +30,20 @@ import { TARGET_DAYS_MAX, defaultTargetDays } from "../../../shared/tranches";
 const NONE = "";
 
 /**
- * Liquidity, horizon and jurisdiction of one asset in this portfolio. Each
- * change is saved at once. "Aplicar a todos" copies this asset's three values
- * to every asset of the tab (asks first: it overwrites theirs).
+ * Liquidity, horizon, jurisdiction and custody of one asset in this portfolio.
+ * Each change is saved at once. "Aplicar a todos" copies this asset's values to
+ * every asset of the tab (asks first: it overwrites theirs).
  */
 export function ClassificationCard({ stock, tab, portfolio }: { stock: Stock; tab: Tab | undefined; portfolio: PortfolioState }) {
-  const defaults = defaultClassification(stock.asset_type ?? assetTypeOfTicker(stock.ticker));
+  const assetType = stock.asset_type ?? assetTypeOfTicker(stock.ticker);
+  const defaults = defaultClassification(assetType);
   const liquidity: Liquidity = stock.liquidity ?? defaults.liquidity;
   const horizon: Horizon | null = stock.horizon === undefined ? defaults.horizon : stock.horizon;
   const jurisdiction: Jurisdiction | null = stock.jurisdiction === undefined ? defaults.jurisdiction : stock.jurisdiction;
+  const custody: Custody | null = stock.custody === undefined ? defaults.custody : stock.custody;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ids = { liquidity: useId(), horizon: useId(), jurisdiction: useId(), target: useId() };
+  const ids = { liquidity: useId(), horizon: useId(), jurisdiction: useId(), custody: useId(), target: useId() };
   const targetDays: number | null = stock.target_days === undefined ? defaultTargetDays(horizon) : stock.target_days;
   const [targetText, setTargetText] = useState(targetDays === null ? "" : String(targetDays));
   useEffect(() => setTargetText(targetDays === null ? "" : String(targetDays)), [targetDays]);
@@ -71,13 +77,14 @@ export function ClassificationCard({ stock, tab, portfolio }: { stock: Stock; ta
   const applyToTab = async () => {
     if (!tab) return;
     const question =
-      `Aplicar a TODOS os ${others + 1} ativos da aba "${tab.name}" a classificação de ${displaySymbol(stock.ticker)}: ` +
-      `${LIQUIDITY[liquidity]}, prazo ${horizonLabel(horizon)}${targetDays !== null ? ` (${targetDays.toLocaleString("pt-BR")} dias)` : ""}, ${jurisdictionLabel(jurisdiction)}? ` +
+      `Aplicar a TODOS os ${others + 1} ativos da aba "${tab.name}" a classificação de ${assetLabel(stock)}: ` +
+      `${LIQUIDITY[liquidity]}, prazo ${horizonLabel(horizon)}${targetDays !== null ? ` (${targetDays.toLocaleString("pt-BR")} dias)` : ""}, ` +
+      `${jurisdictionLabel(jurisdiction)}, custódia ${custodyLabel(custody)}? ` +
       `A classificação própria de cada um será substituída.`;
     setSaving(true);
     setError(null);
     try {
-      await portfolio.classifyTab(tab.id, { liquidity, jurisdiction, targetDays }, question);
+      await portfolio.classifyTab(tab.id, { liquidity, jurisdiction, custody, targetDays }, question);
     } catch (err) {
       setError(errorMessage(err, "Não foi possível aplicar à aba."));
     } finally {
@@ -111,7 +118,7 @@ export function ClassificationCard({ stock, tab, portfolio }: { stock: Stock; ta
       title="Classificação"
       extra={saving ? <Loader2 size={14} className="animate-spin text-tv-text/40" aria-label="Salvando" /> : undefined}
     >
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-5 gap-4">
         {select(ids.liquidity, "Liquidez", liquidity, LIQUIDITY_IDS.map((v) => [v, LIQUIDITY[v]]), (v) => void save({ liquidity: v as Liquidity }), false)}
         {select(
           ids.horizon,
@@ -144,11 +151,21 @@ export function ClassificationCard({ stock, tab, portfolio }: { stock: Stock; ta
           (v) => void save({ jurisdiction: v === NONE ? null : (v as Jurisdiction) }),
           true
         )}
+        {select(
+          ids.custody,
+          "Custódia",
+          custody ?? NONE,
+          CUSTODY_IDS.map((v) => [v, CUSTODY[v]]),
+          (v) => void save({ custody: v === NONE ? null : (v as Custody) }),
+          true
+        )}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-tv-text/50">
         <span>
-          Moeda de cotação: {CURRENCY_LABEL[isCurrency(stock.currency) ? stock.currency : "USD"]}. Cada compra herda o prazo-alvo e matura em
-          data + prazo (dá para mudar por tranche na escada abaixo).
+          {assetType === "cash"
+            ? `Moeda da conta: ${CURRENCY_LABEL[isCurrency(stock.currency) ? stock.currency : "USD"]}.`
+            : `Moeda ${assetType === "illiquid" ? "do ativo" : "de cotação"}: ${CURRENCY_LABEL[isCurrency(stock.currency) ? stock.currency : "USD"]}. ` +
+              "Cada compra herda o prazo-alvo e matura em data + prazo (dá para mudar por tranche na escada abaixo)."}
         </span>
         {tab && others > 0 && (
           <button type="button" disabled={saving} onClick={() => void applyToTab()} className="underline hover:text-tv-text disabled:opacity-40">

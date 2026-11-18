@@ -16,6 +16,8 @@ import type {
 } from "../types";
 import type { FxSnapshot } from "../../shared/currencies";
 import type { AssetType } from "../../shared/assetTypes";
+import type { CurrencyCode } from "../../shared/currencies";
+import type { Valuation } from "../../shared/manualAssets";
 
 type UserResponse = { success: boolean; user: AuthUser };
 
@@ -63,6 +65,16 @@ export const portfolioApi = {
   stocks: (portfolioId: number) => api<Stock[]>("/api/stocks", { portfolioId }),
   addStock: (portfolioId: number, stock: { ticker: string; name: string; tabId: number }) =>
     api("/api/stocks", { method: "POST", body: stock, portfolioId }),
+  /** An illiquid asset or cash account (the server creates its identity). */
+  addManualStock: (portfolioId: number, stock: { name: string; tabId: number; currency: CurrencyCode }) =>
+    api<Stock>("/api/stocks/manual", { method: "POST", body: stock, portfolioId }),
+  renameStock: (portfolioId: number, ticker: string, name: string) =>
+    api<Stock>(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "PATCH", body: { name }, portfolioId }),
+  addValuation: (portfolioId: number, ticker: string, v: { date: string; price: string; note: string }) =>
+    api<Valuation[]>(`/api/stocks/${encodeURIComponent(ticker)}/valuations`, { method: "POST", body: v, portfolioId }),
+  updateValuation: (portfolioId: number, id: number, v: { date: string; price: string; note: string }) =>
+    api<Valuation[]>(`/api/valuations/${id}`, { method: "PATCH", body: v, portfolioId }),
+  deleteValuation: (portfolioId: number, id: number) => api(`/api/valuations/${id}`, { method: "DELETE", portfolioId }),
   deleteStock: (portfolioId: number, ticker: string) =>
     api(`/api/stocks/${encodeURIComponent(ticker)}`, { method: "DELETE", portfolioId }),
   transactions: (portfolioId: number) => api<Transaction[]>("/api/transactions?order=desc", { portfolioId }),

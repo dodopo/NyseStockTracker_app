@@ -16,6 +16,26 @@ and this project follows [Semantic Versioning](https://semver.org/).
 -
 
 
+## [0.16.0] - 2026-11-18
+
+**Ilíquidos e Caixa.** Two new asset types for what has no market quote, and a custody classification. **Database migration v10: the `tabs` table is rebuilt (its type rule only accepted US stocks and crypto); back up first.** Ids, order and everything else are kept and checked row by row before the old table goes. Going back to v0.15.x means restoring the backup (v0.15 does not know the new types); `dodopoam-update` does it by itself on failure.
+
+### Added
+- **Ilíquido (avaliação manual):** a tab type for real estate, private companies, anything without a quote. An asset is created by name (no search) in a fixed currency (BRL, USD, EUR or CHF) and can be renamed. **Dated valuations** (date, value of one unit, note), one per date, editable; deleting asks first. Today's value is the latest valuation up to today; with none yet, the asset is worth its average cost ("pelo custo"). A valuation older than 365 days is flagged in amber. A step chart shows the valuations with the purchases and sales. Buys and sales work as before (PTAX frozen, tranches).
+- **Caixa / Dinheiro:** a tab type for bank accounts, cash at home, a safe... Created by name in a fixed currency; one unit is worth 1 of it, so the quantity is the balance. The form says DEPÓSITO / SAQUE; in the account's own currency there is no price to type; paid in another currency, the price is the exchange rate paid (and a blank one offers today's rate). A withdrawal above the balance is refused. The screen shows the balance and a statement with the balance after each movement. Cash starts liquid and Curtíssimo; in "Por prazo · Maturação" it stays in the range of its thesis (it has no tranches to mature).
+- Limits: 1,000 valuations per asset and 20,000 per account (the most a backup restores, so a backup of the account always restores).
+- **Custódia** (Instituição / Autocustódia / Não definido) for every asset, with "aplicar a todos os ativos da aba" and the "Por custódia" allocation. US stocks start at "Instituição" (existing ones too).
+- Backup exports and restores the new types, their currency, custody and valuations.
+
+### Fixed
+- The portfolio switcher summed values without today's exchange rates: an asset in reais, euros or francs would have been left out of the portfolio's value. It now converts everything to dollars with today's rates.
+- Long values (a property in reais) no longer run out of the summary cards.
+- Without today's exchange rates (still loading, or the source down), an asset in another currency is left out of the totals: the consolidated view and the portfolio switcher now say in red how many, instead of just showing a smaller total.
+
+### Security
+- The identity of an illiquid asset or cash account (`I:`/`C:` + 10 characters) is always created by the server; it never reaches the market data providers (quotes, charts and statistics refuse it). A valuation is only found through its asset, in the user's active portfolio.
+
+
 ## [0.15.2] - 2026-11-18
 
 No database change; updating is enough.

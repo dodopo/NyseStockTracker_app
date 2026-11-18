@@ -1,8 +1,10 @@
 import { assetTypeOfTicker, isCryptoTicker } from "../../../shared/assetTypes";
+import { calculatePosition } from "../../../shared/positions";
+import { manualPrice } from "../../../shared/manualAssets";
 import { defaultClassification } from "../../../shared/classification";
 import { isCurrency, type CurrencyCode, type RateTable } from "../../../shared/currencies";
 import { convertTrades, positionIn } from "../../../shared/fxPositions";
-import { defaultTargetDays, maturityOf, replayTranches, type MaturityBucket } from "../../../shared/tranches";
+import { defaultTargetDays, localToday, maturityOf, replayTranches, type MaturityBucket } from "../../../shared/tranches";
 import type { StockPrice } from "../../services/marketService";
 import type { PortfolioItem, Stock, Transaction } from "../../types";
 
@@ -14,13 +16,17 @@ import type { PortfolioItem, Stock, Transaction } from "../../types";
  * the current price with today's rate (`live`). Assets that cannot be shown in
  * `currency` (no rate yet) are left out; the caller then shows the asset's own
  * currency instead.
+ *
+ * An illiquid asset is priced by its latest valuation up to `today` (or its
+ * average cost while it has none) and a cash account at 1: neither has a quote.
  */
 export function buildRows(
   stocks: Stock[],
   transactions: Transaction[],
   prices: Record<string, StockPrice>,
   currency: CurrencyCode = "USD",
-  live?: RateTable | null
+  live?: RateTable | null,
+  today: string = localToday()
 ): PortfolioItem[] {
   const byAsset = new Map<string, Transaction[]>();
   for (const t of transactions) {
@@ -33,10 +39,15 @@ export function buildRows(
   for (const s of stocks) {
     const key = `${s.portfolio_id ?? 0}:${s.ticker}`;
     const assetCurrency: CurrencyCode = isCurrency(s.currency) ? s.currency : "USD";
-    const nativePrice = prices[s.ticker]?.price || 0;
-    const p = positionIn(byAsset.get(key) ?? [], assetCurrency, nativePrice, currency, live);
+    const assetType = s.asset_type ?? assetTypeOfTicker(s.ticker);
+    const trades = byAsset.get(key) ?? [];
+    // Average cost in the asset's own currency (for an illiquid asset not valued yet).
+    const costOf = () => calculatePosition(convertTrades(trades, assetCurrency, assetCurrency, live).trades, 0).avgCost;
+    const manual = manualPrice(assetType, s.valuations, assetType === "illiquid" ? costOf() : 0, today);
+    const nativePrice = manual ? manual.price : prices[s.ticker]?.price || 0;
+    const p = positionIn(trades, assetCurrency, nativePrice, currency, live);
     if (!p) continue;
-    const defaults = defaultClassification(s.asset_type ?? assetTypeOfTicker(s.ticker));
+    const defaults = defaultClassification(assetType);
     rows.push({
       key,
       ticker: s.ticker,
@@ -56,14 +67,27 @@ export function buildRows(
       currency,
       assetCurrency,
       isCrypto: isCryptoTicker(s.ticker),
+      assetType,
+      manualPrice: manual,
       liquidity: s.liquidity ?? defaults.liquidity,
       horizon: s.horizon === undefined ? defaults.horizon : s.horizon,
       jurisdiction: s.jurisdiction === undefined ? defaults.jurisdiction : s.jurisdiction,
+      custody: s.custody === undefined ? defaults.custody : s.custody,
       approxTrades: p.approx,
       missingTrades: p.missing,
     });
   }
   return rows;
+}
+
+/**
+ * How many assets buildRows leaves out for lack of today's rates: those whose
+ * own currency is not the one shown (an asset in reais, euros or francs while
+ * the rates have not loaded). The screen must say so, never just a smaller total.
+ */
+export function assetsLeftOut(stocks: Stock[], currency: CurrencyCode, live?: RateTable | null) {
+  if (live) return 0;
+  return stocks.filter((s) => (isCurrency(s.currency) ? s.currency : "USD") !== currency).length;
 }
 
 /** Market value of each portfolio (open positions), for the portfolio switcher. */
@@ -99,6 +123,13 @@ export function maturityAllocation(
   const totals = new Map<MaturityBucket, number>();
   for (const r of rows) {
     const s = stockOf.get(r.key);
+    // Cash is available at any time: it has no tranches to mature, it sits in the
+    // range of its thesis (Curtíssimo by default).
+    if (r.assetType === "cash") {
+      const bucket: MaturityBucket = r.horizon ?? "none";
+      totals.set(bucket, (totals.get(bucket) ?? 0) + r.marketValue);
+      continue;
+    }
     const target = s?.target_days === undefined ? defaultTargetDays(r.horizon) : s.target_days;
     // the same trades the position used (a trade left out for lack of a rate stays out here too)
     const used = convertTrades(tradesOf.get(r.key) ?? [], r.assetCurrency, r.currency, live).trades;

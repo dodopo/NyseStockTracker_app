@@ -19,8 +19,11 @@ export const LIMITS = {
 } as const;
 
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** US stock ticker (AAPL, BRK.B) or crypto pair in Massive format (X:BTCUSD). */
-export const TICKER_RE = /^(?:X:[A-Z0-9]{2,15}USD|[A-Z0-9][A-Z0-9.\-]{0,14})$/;
+/**
+ * US stock ticker (AAPL, BRK.B), crypto pair in Massive format (X:BTCUSD), or the
+ * internal identity of an illiquid (I:...) or cash (C:...) asset, 10 letters or digits.
+ */
+export const TICKER_RE = /^(?:X:[A-Z0-9]{2,15}USD|[IC]:[A-Z0-9]{10}|[A-Z0-9][A-Z0-9.\-]{0,14})$/;
 export const FINNHUB_KEY_RE = /^[A-Za-z0-9_-]+$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

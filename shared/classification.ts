@@ -38,26 +38,44 @@ export function horizonOfDays(days: number): Horizon {
 export const JURISDICTION = { onshore: "Onshore", offshore: "Offshore" } as const;
 export type Jurisdiction = keyof typeof JURISDICTION;
 
+/**
+ * Who holds the asset: an institution (bank, broker, exchange) or the owner
+ * (autocustódia: own wallet, safe at home, bank safe deposit box...).
+ */
+export const CUSTODY = { institution: "Instituição", self: "Autocustódia" } as const;
+export type Custody = keyof typeof CUSTODY;
+
 export const NOT_DEFINED = "Não definido";
 
 export const LIQUIDITY_IDS = Object.keys(LIQUIDITY) as Liquidity[];
 export const HORIZON_IDS = Object.keys(HORIZON) as Horizon[];
 export const JURISDICTION_IDS = Object.keys(JURISDICTION) as Jurisdiction[];
+export const CUSTODY_IDS = Object.keys(CUSTODY) as Custody[];
 
-export type Classification = { liquidity: Liquidity; horizon: Horizon | null; jurisdiction: Jurisdiction | null };
+export type Classification = {
+  liquidity: Liquidity;
+  horizon: Horizon | null;
+  jurisdiction: Jurisdiction | null;
+  custody: Custody | null;
+};
 
 /**
- * Starting values of a new asset. A US stock is held abroad; crypto depends on
- * where it is kept (exchange abroad, in Brazil, own wallet), so the user says.
+ * Starting values of a new asset. A US stock is held abroad, at a broker;
+ * crypto depends on where it is kept (exchange abroad, in Brazil, own wallet),
+ * so the user says. An illiquid asset is illiquid; cash is liquid and
+ * short-term (decided by the Fundador, 18/11/2026), and where it is (bank,
+ * home, abroad) only the user knows.
  */
 export function defaultClassification(assetType: AssetType): Classification {
   return {
-    liquidity: "liquid",
-    horizon: null,
+    liquidity: assetType === "illiquid" ? "illiquid" : "liquid",
+    horizon: assetType === "cash" ? "ultra_short" : null,
     jurisdiction: assetType === "us_stock" ? "offshore" : null,
+    custody: assetType === "us_stock" ? "institution" : null,
   };
 }
 
 export const liquidityLabel = (v: Liquidity | null | undefined) => (v ? LIQUIDITY[v] : NOT_DEFINED);
 export const horizonLabel = (v: Horizon | null | undefined) => (v ? HORIZON[v].label : NOT_DEFINED);
 export const jurisdictionLabel = (v: Jurisdiction | null | undefined) => (v ? JURISDICTION[v] : NOT_DEFINED);
+export const custodyLabel = (v: Custody | null | undefined) => (v ? CUSTODY[v] : NOT_DEFINED);

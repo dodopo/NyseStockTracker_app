@@ -275,7 +275,10 @@ moeda e PTAX): a v0.13.x ainda funciona sobre o banco migrado, mas o que for gra
 valores padrão (moeda do ativo, PTAX buscada de novo quando a v0.14.0 voltar); o caminho mais seguro
 continua sendo restaurar o backup. A v0.15.0 também só acrescenta (tranches), mas a v0.14.x não
 conhece as tranches escolhidas: sobre o banco migrado, apagar uma compra escolhida dá erro e uma venda
-retroativa pode desmontar uma escolha. Voltar da v0.15.0 = restaurar o backup. Para essas versões, faça o rollback manual com
+retroativa pode desmontar uma escolha. Voltar da v0.15.0 = restaurar o backup. A v0.16.0 recria a
+tabela de abas (para aceitar os tipos Ilíquido e Caixa) e acrescenta custódia e avaliações: a v0.15.x
+abre o banco, mas não conhece os tipos novos (as abas deles quebram a tela). Voltar da v0.16.0 =
+restaurar o backup. Para essas versões, faça o rollback manual com
 o backup tirado **antes** da atualização:
 
 1. Pare o app:

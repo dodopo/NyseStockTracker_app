@@ -6,7 +6,8 @@ import { z } from "zod";
 import { parsePositiveDecimal } from "./decimal";
 import { ASSET_TYPE_IDS, TAB_COLORS } from "./assetTypes";
 import { CURRENCIES } from "./currencies";
-import { HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Horizon, type Jurisdiction, type Liquidity } from "./classification";
+import { CUSTODY_IDS, HORIZON_IDS, JURISDICTION_IDS, LIQUIDITY_IDS, type Custody, type Horizon, type Jurisdiction, type Liquidity } from "./classification";
+import { VALUATION_NOTE_MAX } from "./manualAssets";
 import {
   EMAIL_RE,
   FINNHUB_KEY_RE,
@@ -75,11 +76,25 @@ export const loginSchema = z.object({
   password: z.string().max(1024),
 });
 
+const assetName = z.string().trim().min(1, "Nome obrigatório").max(LIMITS.stockNameMax, "Nome muito longo");
+
 export const stockSchema = z.object({
   ticker: tickerSchema,
-  name: z.string().trim().min(1, "Nome obrigatório").max(LIMITS.stockNameMax, "Nome muito longo"),
+  name: assetName,
   tabId: z.coerce.number().int().positive("Aba inválida"),
 });
+
+/** An illiquid asset or a cash account: no search, the server creates its identity. */
+export const manualStockSchema = z
+  .object({
+    name: assetName,
+    tabId: z.number().int().positive("Aba inválida"),
+    currency: z.enum(CURRENCIES, { message: "Moeda inválida" }),
+  })
+  .strict();
+
+/** New name of an illiquid asset or cash account. */
+export const stockRenameSchema = z.object({ name: assetName }).strict();
 
 const tabName = z.string().trim().min(1, "Dê um nome à aba").max(40, "Nome da aba muito longo");
 const tabColor = z.enum(TAB_COLORS, { message: "Cor inválida" });
@@ -158,6 +173,7 @@ export const trancheTargetSchema = z.object({ targetDays: targetDaysField }).str
 const liquidityField = z.enum(LIQUIDITY_IDS as [Liquidity, ...Liquidity[]], { message: "Liquidez inválida" });
 const horizonField = z.enum(HORIZON_IDS as [Horizon, ...Horizon[]], { message: "Prazo inválido" }).nullable();
 const jurisdictionField = z.enum(JURISDICTION_IDS as [Jurisdiction, ...Jurisdiction[]], { message: "Jurisdição inválida" }).nullable();
+const custodyField = z.enum(CUSTODY_IDS as [Custody, ...Custody[]], { message: "Custódia inválida" }).nullable();
 
 /** Classification of an asset (or of every asset of a tab): only the fields sent change; null = "Não definido". */
 export const classificationSchema = z
@@ -165,13 +181,24 @@ export const classificationSchema = z
     liquidity: liquidityField.optional(),
     horizon: horizonField.optional(),
     jurisdiction: jurisdictionField.optional(),
+    custody: custodyField.optional(),
     /** The thesis target in days; the horizon follows it (the range those days fall in). */
     targetDays: targetDaysField.optional(),
   })
   .strict()
-  .refine((d) => d.liquidity !== undefined || d.horizon !== undefined || d.jurisdiction !== undefined || d.targetDays !== undefined, {
-    message: "Nada para alterar",
-  });
+  .refine(
+    (d) => d.liquidity !== undefined || d.horizon !== undefined || d.jurisdiction !== undefined || d.custody !== undefined || d.targetDays !== undefined,
+    { message: "Nada para alterar" }
+  );
+
+/** A dated valuation of an illiquid asset: price of ONE unit, in the asset's currency. */
+export const valuationSchema = z
+  .object({
+    date: isoDateSchema,
+    price: decimalSchema("Valor"),
+    note: z.string().trim().max(VALUATION_NOTE_MAX, `Observação: até ${VALUATION_NOTE_MAX} caracteres`).optional().default(""),
+  })
+  .strict();
 
 const apiKeyField = z
   .string()
